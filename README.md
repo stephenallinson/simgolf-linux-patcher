@@ -29,7 +29,7 @@ Tested on Wine 11.19 (Arch), Mesa 26.2 / RADV, AMD Radeon RX 9070 XT.
    WINEPREFIX=~/.wine-simgolf ./run.sh
    ```
 
-   This runs the game at its native 800x600 inside [gamescope](https://github.com/ValveSoftware/gamescope), scaled to fullscreen, if gamescope is installed. Otherwise it uses a plain Wine virtual desktop. Use `./run.sh --no-gamescope` to force the plain desktop.
+   This runs the game at its native 800x600 inside [gamescope](https://github.com/ValveSoftware/gamescope), enlarged by the largest whole-number factor that fits your screen, so pixels stay crisp and square (for example 2x on a 1440p monitor). For other scaling, set gamescope options in `GAMESCOPE_ARGS`: `GAMESCOPE_ARGS="-F pixel" ./run.sh` or `"-F fsr"` fill the screen height. Without gamescope, `run.sh` uses a plain Wine virtual desktop; `./run.sh --no-gamescope` forces that.
 
 To undo everything: `./patch-terrain.sh --revert`.
 
