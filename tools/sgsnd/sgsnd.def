@@ -1,0 +1,5 @@
+LIBRARY sgsnd.dll
+EXPORTS
+CoInitialize=sg_CoInitialize@4
+CoCreateInstance=sg_CoCreateInstance@20
+CoUninitialize=sg_CoUninitialize@0

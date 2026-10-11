@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <psapi.h>
 
 #ifndef GL_BGRA
 #define GL_BGRA 0x80E1
@@ -424,6 +425,24 @@ void WINAPI shim_glFlush(void)
     begins_since_flush = 0;
 }
 
+/* Log every loaded module with its address range (for reverse engineering). */
+static void log_modules(void)
+{
+    HMODULE mods[256];
+    DWORD needed, i;
+    MODULEINFO info;
+    char name[MAX_PATH];
+
+    if (!log_on) return;
+    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) return;
+    for (i = 0; i < needed / sizeof(HMODULE) && i < 256; i++)
+    {
+        if (!GetModuleFileNameA(mods[i], name, sizeof(name))) continue;
+        if (!GetModuleInformation(GetCurrentProcess(), mods[i], &info, sizeof(info))) continue;
+        log_msg("module %p-%p %s", info.lpBaseOfDll, (char *)info.lpBaseOfDll + info.SizeOfImage, name);
+    }
+}
+
 HGLRC WINAPI shim_wglCreateContext(HDC hdc)
 {
     struct shim_context *ctx;
@@ -442,6 +461,7 @@ HGLRC WINAPI shim_wglCreateContext(HDC hdc)
     ctx->next = contexts;
     contexts = ctx;
     log_msg("wglCreateContext memdc %p -> rc %p on hidden window", hdc, rc);
+    log_modules();
     return rc;
 }
 
