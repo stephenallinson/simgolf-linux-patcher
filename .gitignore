@@ -1,0 +1,9 @@
+# Game files: never commit or distribute EA's files
+iso/
+*.iso
+*.zip
+
+# Build output (release zips carry the prebuilt DLL)
+*.dll
+*.exe
+dist/
