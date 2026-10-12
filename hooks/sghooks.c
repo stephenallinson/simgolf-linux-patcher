@@ -675,6 +675,47 @@ static void move_boundary(const char *what, DWORD addr, const BYTE op[2], DWORD 
     patch_bytes(what, addr, old_ins, new_ins, sizeof(old_ins));
 }
 
+/* The load and save screens' file lists (0x43c7ab in 0x43b610, 0x43b3b1 in
+ * 0x43a8c0) test the click globals directly:
+ *   cmp dword [0x822d60], 0x140 ; jle   (x > 320)
+ *   mov eax, [0x822d64]          (y; then y >= 116, row = (y - 116) / 16)
+ * Raise the x boundary by the centring offset, and replace the y load with a
+ * call to a stub that loads y minus the offset. */
+static void patch_file_lists(void)
+{
+    static const DWORD sites[] = {0x43c7ab, 0x43b3b1};
+    static const BYTE cmp_x[] = {0x81, 0x3d, 0x60, 0x2d, 0x82, 0x00, 0x40, 0x01, 0x00, 0x00};
+    static const BYTE mov_y[] = {0xa1, 0x64, 0x2d, 0x82, 0x00};
+    int dx = ((int)screen_w - 800) / 2, dy = ((int)screen_h - 600) / 2, i;
+    BYTE *stub;
+
+    if (!dx && !dy) return;
+    if (!(stub = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)))
+    {
+        log_msg("file lists: VirtualAlloc failed");
+        return;
+    }
+    memcpy(stub, mov_y, sizeof(mov_y));       /* mov eax, [0x822d64] */
+    stub[5] = 0x2d;                            /* sub eax, dy */
+    memcpy(stub + 6, &dy, 4);
+    stub[10] = 0xc3;                           /* ret */
+    for (i = 0; i < 2; i++)
+    {
+        BYTE new_x[sizeof(cmp_x)], call_y[5];
+        DWORD x_limit = 0x140 + dx, rel = (DWORD)stub - (sites[i] + 0x10 + 5);
+        char what[48];
+
+        memcpy(new_x, cmp_x, sizeof(new_x));
+        memcpy(new_x + 6, &x_limit, 4);
+        call_y[0] = 0xe8;
+        memcpy(call_y + 1, &rel, 4);
+        snprintf(what, sizeof(what), "file list x at %#lx", sites[i]);
+        patch_bytes(what, sites[i], cmp_x, new_x, sizeof(cmp_x));
+        snprintf(what, sizeof(what), "file list y at %#lx", sites[i] + 0x10);
+        patch_bytes(what, sites[i] + 0x10, mov_y, call_y, sizeof(mov_y));
+    }
+}
+
 static void hook_hud_input(void)
 {
     static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
@@ -707,6 +748,7 @@ static void hook_hud_input(void)
     }
     move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
     move_boundary("bottom HUD click boundary (palette)", 0x41e459, cmp_ecx, 0x1e0, dy);
+    patch_file_lists();
 }
 
 /* Edge scrolling (main loop, after reading the mouse at 0x41e174) pans when
