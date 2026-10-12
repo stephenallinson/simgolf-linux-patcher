@@ -194,6 +194,10 @@ static const struct hud_rule hud_rules[] =
     {"stats panel shadow", 0x420f11, 0x420f12, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     {"stats panel shadow", 0x42114b, 0x42114c, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     {"stats panel shadow", 0x4212d8, 0x4212d9, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
+    /* dark bars behind each stat (626,23 / 669,74 / 706,125), drawn through
+     * 0x470140 from these two call sites; 0x47c31f also redraws other things */
+    {"stats bars", 0x407d4b, 0x407d4c, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
+    {"stats bars", 0x47c31f, 0x47c320, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     /* HUD routine's call to the control wheel (0x432ba0) */
     {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
 };
