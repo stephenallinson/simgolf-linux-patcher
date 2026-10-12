@@ -200,6 +200,17 @@ static const struct hud_rule hud_rules[] =
     {"stats bars", 0x47c31f, 0x47c320, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     /* HUD routine's call to the control wheel (0x432ba0) */
     {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
+    /* HUD routine's calls to the tool palette, one per palette mode:
+     * 0x433190, 0x434350, 0x435760, 0x4362f0 (modes 3 and 4) */
+    {"tool palette", 0x4197ea, 0x4197eb, ANCHOR_BOTTOM},
+    {"tool palette", 0x419816, 0x419817, ANCHOR_BOTTOM},
+    {"tool palette", 0x419842, 0x419843, ANCHOR_BOTTOM},
+    {"tool palette", 0x4198b3, 0x4198b4, ANCHOR_BOTTOM},
+    /* palette shadows, from the same four shadow call sites as the stats panel */
+    {"tool palette shadow", 0x40f84d, 0x40f84e, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
+    {"tool palette shadow", 0x420f11, 0x420f12, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
+    {"tool palette shadow", 0x42114b, 0x42114c, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
+    {"tool palette shadow", 0x4212d8, 0x4212d9, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
 };
 
 typedef int (__fastcall *getter_fn)(void *self, void *edx);
@@ -444,24 +455,80 @@ static void hook_draws(const char *dir)
 }
 
 /* ---- HUD click handling ----
- * Each moved HUD part's hit test gets the mouse position moved back by the
- * same offset, so the game's own 800x600 button logic still works. */
+ * The main loop routes clicks in the bottom HUD by the click position
+ * (globals 0x822d60 x / 0x822d64 y), checked against 800x600 boundaries:
+ *   y > 440 (0x41e406), x < 200 -> control wheel click handler 0x432720
+ *   y > 480 (0x41e459)          -> tool palette click handler for the mode
+ * Those boundaries move down with the bottom HUD, and every handler and hover
+ * check gets the mouse position moved back by the same offset, so the game's
+ * own 800x600 button logic still works. */
 
-/* Control wheel: int __cdecl hit_test(x, y) at 0x4326a0, nearest button or -1. */
-typedef int (__cdecl *wheel_hit_fn)(int x, int y);
-static wheel_hit_fn wheel_hit_orig;
+/* Control wheel: int __cdecl hit_test(x, y) at 0x4326a0, nearest button or -1
+ * (called by both its draw function, for hover, and its click handler). */
+typedef int (__cdecl *mouse_fn)(int x, int y);
+static mouse_fn wheel_hit_orig;
 
 static int __cdecl wheel_hit_hook(int x, int y)
 {
     return wheel_hit_orig(x, y - ((int)screen_h - 600));
 }
 
+/* Tool palette: draw functions (mouse position for hover) and click handlers,
+ * all int __cdecl f(x, y), each starting with a 5-byte mov eax, [abs]. */
+#define PALETTE_FUNCS 8
+static const DWORD palette_addr[PALETTE_FUNCS] =
+{
+    0x433190, 0x434350, 0x435760, 0x4362f0,   /* draw, per palette mode */
+    0x433040, 0x434140, 0x435680, 0x436060,   /* click, per palette mode */
+};
+static mouse_fn palette_orig[PALETTE_FUNCS];
+
+#define PALETTE_HOOK(i) \
+    static int __cdecl palette_hook_##i(int x, int y) \
+    { return palette_orig[i](x, y - ((int)screen_h - 600)); }
+PALETTE_HOOK(0) PALETTE_HOOK(1) PALETTE_HOOK(2) PALETTE_HOOK(3)
+PALETTE_HOOK(4) PALETTE_HOOK(5) PALETTE_HOOK(6) PALETTE_HOOK(7)
+static void *const palette_hook[PALETTE_FUNCS] =
+{
+    palette_hook_0, palette_hook_1, palette_hook_2, palette_hook_3,
+    palette_hook_4, palette_hook_5, palette_hook_6, palette_hook_7,
+};
+
+/* Move a cmp reg, imm32 boundary by delta (checks the instruction first). */
+static void move_boundary(const char *what, DWORD addr, const BYTE op[2], DWORD orig, int delta)
+{
+    BYTE old_ins[6], new_ins[6];
+    DWORD moved = orig + delta;
+
+    memcpy(old_ins, op, 2);
+    memcpy(old_ins + 2, &orig, 4);
+    memcpy(new_ins, op, 2);
+    memcpy(new_ins + 2, &moved, 4);
+    patch_bytes(what, addr, old_ins, new_ins, sizeof(old_ins));
+}
+
 static void hook_hud_input(void)
 {
     static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
+    static const BYTE cmp_ecx[2] = {0x81, 0xf9};
+    int dy = (int)screen_h - 600, i;
 
     wheel_hit_orig = install_hook("control wheel hit test", 0x4326a0, wheel_prologue,
                                   sizeof(wheel_prologue), wheel_hit_hook);
+    for (i = 0; i < PALETTE_FUNCS; i++)
+    {
+        BYTE prologue[5];
+        char what[48];
+
+        /* the prologue's operand is an absolute address, so it can be copied as-is;
+         * only the mov eax, [abs] opcode is checked */
+        memcpy(prologue, (void *)palette_addr[i], 5);
+        if (prologue[0] != 0xa1) { log_msg("palette function %#lx: unexpected prologue, not hooked", palette_addr[i]); continue; }
+        snprintf(what, sizeof(what), "tool palette function %#lx", palette_addr[i]);
+        palette_orig[i] = install_hook(what, palette_addr[i], prologue, 5, palette_hook[i]);
+    }
+    move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
+    move_boundary("bottom HUD click boundary (palette)", 0x41e459, cmp_ecx, 0x1e0, dy);
 }
 
 /* Edge scrolling (main loop, after reading the mouse at 0x41e174) pans when
