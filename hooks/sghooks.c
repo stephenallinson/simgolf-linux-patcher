@@ -171,7 +171,9 @@ static void hook_windows(void)
 #define GOLF_TEXT_START  0x401000
 #define GOLF_TEXT_END    0x4b942b
 
-enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER, ANCHOR_NONE };
+/* RIGHT / BOTTOM: follow that screen edge; CENTER: centred; TOP: centred
+ * horizontally, at the top; NONE: never moved */
+enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER, ANCHOR_TOP, ANCHOR_NONE };
 
 /* A HUD part: draws issued from these golf.exe return addresses move together.
  * A rule can also filter on the draw's original 800x600 position, for call
@@ -217,6 +219,9 @@ static const struct hud_rule hud_rules[] =
     {"load/save screen", 0x43b610, 0x43cb50, ANCHOR_CENTER},
     /* Top 10 Designers (from the wheel's Information menu) */
     {"top 10 designers", 0x473470, 0x473a70, ANCHOR_CENTER},
+    /* speech bubble along the top (face and message), 0x40d320, called each
+     * frame through 0x40d6a0 */
+    {"speech bubble", 0x40d320, 0x40d6a0, ANCHOR_TOP},
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and
      * text, and their drop shadows (sprite +0x6c through 0x421b90) */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
@@ -327,6 +332,7 @@ static void anchor_offset(enum anchor a, int *dx, int *dy)
     if (a == ANCHOR_RIGHT) *dx = screen_w - 800;
     else if (a == ANCHOR_BOTTOM) *dy = screen_h - 600;
     else if (a == ANCHOR_CENTER) { *dx = (screen_w - 800) / 2; *dy = (screen_h - 600) / 2; }
+    else if (a == ANCHOR_TOP) *dx = (screen_w - 800) / 2;
 }
 
 /* The HUD rule for the innermost caller that matches one, or NULL. */
@@ -800,6 +806,49 @@ static void patch_vertical_scale(void)
     redirect_call("font size (second)", 0x45be3c, SCALE_FN, scale_y);
 }
 
+/* The game has course tile sizes and a projection scale for three screen
+ * sizes only: 800x600, 1024x768 and 1280x1024.
+ *   0x44a6e0  tile sizes: mov eax, [0x820f30] (width), then
+ *             cmp dword [0x820f34], 600 / 768 / 1024 (height) at 0x44a6f3,
+ *             0x44a72a, 0x44a75c; any other size gets uninitialised values
+ *   0x42fbcc  projection: mov edi, [0x822c8c] (width), then 1024 / 1280
+ * Both read a tier picked from the screen height instead, so they agree and
+ * wide screens get a supported one. */
+static DWORD tier_w = 800, tier_h = 600;
+
+static void patch_course_tier(void)
+{
+    static const BYTE tile_w[] = {0xa1, 0x30, 0x0f, 0x82, 0x00};
+    static const BYTE proj_w[] = {0x8b, 0x3d, 0x8c, 0x2c, 0x82, 0x00};
+    static const DWORD cmp_sites[] = {0x44a6f3, 0x44a72a, 0x44a75c};
+    static const DWORD cmp_imm[] = {600, 768, 1024};
+    BYTE new_tile[5], new_proj[6], old_cmp[10], new_cmp[10];
+    DWORD pw = (DWORD)&tier_w, ph = (DWORD)&tier_h;
+    int i;
+
+    if (screen_h >= 900) { tier_w = 1280; tier_h = 1024; }
+    else if (screen_h >= 700) { tier_w = 1024; tier_h = 768; }
+    log_msg("course tier %lux%lu", tier_w, tier_h);
+    memcpy(new_tile, tile_w, 1);
+    memcpy(new_tile + 1, &pw, 4);
+    patch_bytes("course tile sizes (width)", 0x44a6e0, tile_w, new_tile, sizeof(tile_w));
+    for (i = 0; i < 3; i++)
+    {
+        char what[48];
+        old_cmp[0] = new_cmp[0] = 0x81;
+        old_cmp[1] = new_cmp[1] = 0x3d;
+        memcpy(old_cmp + 2, "\x34\x0f\x82\x00", 4);
+        memcpy(new_cmp + 2, &ph, 4);
+        memcpy(old_cmp + 6, &cmp_imm[i], 4);
+        memcpy(new_cmp + 6, &cmp_imm[i], 4);
+        snprintf(what, sizeof(what), "course tile sizes (height %lu)", cmp_imm[i]);
+        patch_bytes(what, cmp_sites[i], old_cmp, new_cmp, sizeof(old_cmp));
+    }
+    memcpy(new_proj, proj_w, 2);
+    memcpy(new_proj + 2, &pw, 4);
+    patch_bytes("course projection", 0x42fbcc, proj_w, new_proj, sizeof(proj_w));
+}
+
 /* The game's main routine (0x45baf0) starts with
  *   mov dword [0x822c8c], 800   ; c7 05 8c 2c 82 00 20 03 00 00
  *   mov dword [0x822c90], 600   ; c7 05 90 2c 82 00 58 02 00 00
@@ -829,6 +878,7 @@ static void patch_resolution(void)
         screen_h = h;
         patch_edge_scroll();
         patch_vertical_scale();
+        patch_course_tier();
     }
     log_msg("requested resolution %ux%u", w, h);
 }
