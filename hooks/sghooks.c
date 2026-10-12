@@ -11,6 +11,7 @@
  *                     screen edge
  *   SGHOOKS_LOG=path  Windows path for a log file (also lists every UI window
  *                     the game creates)
+ *   SGHOOKS_NO_MENUS=1 leave text menus and message boxes where they are
  *   SGHOOKS_DRAWLOG=1 also log every distinct draw onto the screen (with
  *                     SGHOOKS_LOG), for mapping the HUD
  */
@@ -556,6 +557,7 @@ static void hook_hud_input(void)
         snprintf(what, sizeof(what), "tool palette function %#lx", palette_addr[i]);
         palette_orig[i] = install_hook(what, palette_addr[i], prologue, 5, palette_hook[i]);
     }
+    if (!GetEnvironmentVariableA("SGHOOKS_NO_MENUS", NULL, 0))
     {
         static const BYTE menu_prologue[] = {0x83, 0xec, 0x48, 0x8b, 0x44, 0x24, 0x54};  /* sub esp,0x48; mov eax,[esp+0x54] */
         menu_orig = install_hook("text menus and message boxes", 0x46d6e0, menu_prologue,
