@@ -205,6 +205,12 @@ static const struct hud_rule hud_rules[] =
     {"report", 0x459850, 0x45a090, ANCHOR_CENTER},
     {"report", 0x45a090, 0x45ae30, ANCHOR_CENTER},
     {"report", 0x46e810, 0x46f1d0, ANCHOR_CENTER},
+    /* title screen, inside the main routine: first draw, then its loop (also the
+     * logo and Pictbckgrnd1 screens, and screens it calls, e.g. 0x43a400) */
+    {"title screen", 0x40f7a0, 0x40f9fc, ANCHOR_CENTER},
+    {"title screen", 0x420e35, 0x421610, ANCHOR_CENTER},
+    /* world map ("Where will you build your golf course?", load/save game) */
+    {"world map", 0x46f550, 0x470a00, ANCHOR_CENTER},
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and
      * text, and their drop shadows (sprite +0x6c through 0x421b90) */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
@@ -236,7 +242,11 @@ static BOOL draw_log;
 static int draw_lines;
 
 /* Return addresses into golf.exe's .text found on the stack (each must follow
- * a call instruction), innermost first. */
+ * a call instruction), innermost first. The main routine (0x40f5c0) is the
+ * outermost frame that matters, and its big frame holds stale addresses, so
+ * the scan stops at the first return address into it. */
+#define MAIN_START 0x40f5c0
+#define MAIN_END   0x421b60
 static int golf_callers(DWORD *out, int max)
 {
     NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
@@ -255,6 +265,7 @@ static int golf_callers(DWORD *out, int max)
         /* stale copies of a return address can sit in many stack slots; keep one */
         for (i = 0; i < n && out[i] != a; i++);
         if (i == n) out[n++] = a;
+        if (a >= MAIN_START && a < MAIN_END) break;
     }
     return n;
 }
@@ -311,27 +322,35 @@ static void anchor_offset(enum anchor a, int *dx, int *dy)
     else if (a == ANCHOR_CENTER) { *dx = (screen_w - 800) / 2; *dy = (screen_h - 600) / 2; }
 }
 
-/* Find the HUD rule for the current draw (innermost matching caller wins),
- * add its offset to x/y, and log the draw if asked. */
-static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h, const char *text)
+/* The HUD rule for the innermost caller that matches one, or NULL. */
+static const struct hud_rule *find_rule(const DWORD *callers, int n, int x, int y)
+{
+    int i, j;
+
+    if (screen_w == 800 && screen_h == 600) return NULL;
+    for (i = 0; i < n; i++)
+        for (j = 0; j < (int)(sizeof(hud_rules) / sizeof(hud_rules[0])); j++)
+        {
+            const struct hud_rule *r = &hud_rules[j];
+            if (callers[i] < r->start || callers[i] >= r->end) continue;
+            if (r->filter && (x < r->x0 || x >= r->x1 || y < r->y0 || y >= r->y1)) continue;
+            return r;
+        }
+    return NULL;
+}
+
+/* Find the HUD rule for the current draw, add its offset to x/y, and log the
+ * draw if asked. Returns the rule. */
+static const struct hud_rule *place_draw(const char *what, void *obj, int *x, int *y, int w, int h, const char *text)
 {
     static DWORD seen[4096];
     static int nseen;
     DWORD callers[8] = {0}, key;
-    const struct hud_rule *rule = NULL;
-    int n, i, j, dx = 0, dy = 0;
+    const struct hud_rule *rule;
+    int n, i, dx = 0, dy = 0;
 
     n = golf_callers(callers, 8);
-    if (screen_w != 800 || screen_h != 600)
-        for (i = 0; i < n && !rule; i++)
-            for (j = 0; j < (int)(sizeof(hud_rules) / sizeof(hud_rules[0])); j++)
-            {
-                const struct hud_rule *r = &hud_rules[j];
-                if (callers[i] < r->start || callers[i] >= r->end) continue;
-                if (r->filter && (*x < r->x0 || *x >= r->x1 || *y < r->y0 || *y >= r->y1)) continue;
-                rule = r;
-                break;
-            }
+    rule = find_rule(callers, n, *x, *y);
     /* full-screen copies (backdrops) never move */
     if (rule && !(w == (int)screen_w && h == (int)screen_h)) anchor_offset(rule->anchor, &dx, &dy);
 
@@ -351,6 +370,7 @@ static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h
     }
     *x += dx;
     *y += dy;
+    return rule;
 }
 
 static int __fastcall spr_draw_5c_hook(void *self, void *edx, void *target, int x, int y, void *clip)
@@ -393,17 +413,37 @@ static int __fastcall spr_shadow_6c_hook(void *self, void *edx, void *target, in
     return spr_shadow_6c(self, edx, target, x, y, a, clip);
 }
 
+static void fill_black(int x, int y, int w, int h);
+
 static int __fastcall surf_blit_40_hook(void *self, void *edx, void *target, RECT *src, RECT *dst)
 {
+    const struct hud_rule *rule;
     RECT moved;
-    int x, y;
+    int x, y, w, h;
 
     if (!dst || !is_screen(target)) return surf_blit_40(self, edx, target, src, dst);
     x = dst->left;
     y = dst->top;
-    place_draw("blit", self, &x, &y, dst->right - dst->left, dst->bottom - dst->top, NULL);
+    w = dst->right - dst->left;
+    h = dst->bottom - dst->top;
+    rule = place_draw("blit", self, &x, &y, w, h, NULL);
     moved = *dst;
     OffsetRect(&moved, x - dst->left, y - dst->top);
+    /* A centred screen's 800x600 backdrop, copied to (0,0) or stretched over
+     * the whole screen: draw it 1:1 in the middle, with black around it. */
+    if (rule && rule->anchor == ANCHOR_CENTER && src &&
+        src->left == 0 && src->top == 0 && src->right == 800 && src->bottom == 600 &&
+        dst->left == 0 && dst->top == 0 &&
+        ((w == 800 && h == 600) || (w == (int)screen_w && h == (int)screen_h)))
+    {
+        int cx = ((int)screen_w - 800) / 2, cy = ((int)screen_h - 600) / 2;
+
+        SetRect(&moved, cx, cy, cx + 800, cy + 600);
+        fill_black(0, 0, screen_w, cy);
+        fill_black(0, cy + 600, screen_w, screen_h - cy - 600);
+        fill_black(0, cy, cx, 600);
+        fill_black(cx + 800, cy, screen_w - cx - 800, 600);
+    }
     return surf_blit_40(self, edx, target, src, &moved);
 }
 
@@ -427,6 +467,14 @@ static int __fastcall fill_hook(void *self, void *edx, int x, int y, int w, int 
 {
     place_draw("fill", self, &x, &y, w, h, NULL);
     return fill_orig(self, edx, x, y, w, h, colour);
+}
+
+/* Fill part of the screen with black, through the main window object
+ * (0x519a60), as the game's own fills do. */
+#define MAIN_WINDOW 0x519a60
+static void fill_black(int x, int y, int w, int h)
+{
+    if (fill_orig && w > 0 && h > 0) fill_orig((void *)MAIN_WINDOW, NULL, x, y, w, h, 0);
 }
 
 /* Sprite +0x94: blended draw (target, x, y, factor, clip, flag), ret 0x18.
@@ -581,26 +629,27 @@ static unsigned int __cdecl menu_hook(int x, int y, unsigned int flags, int a4, 
 }
 
 /* Mouse position: void __thiscall get_mouse(int *x, int *y) at 0x47ab50.
- * Report windows run their own loops, reading the mouse here and comparing it
- * with fixed 800x600 boxes (e.g. the close button); when the caller is inside a
- * centred report, move the position back by the centring offset. */
+ * Report windows, the title screen and the world map run their own loops,
+ * reading the mouse here and comparing it with fixed 800x600 positions (e.g.
+ * the close button); when the caller's rule (as for draws) centres it, move
+ * the position back by the centring offset. */
 typedef void (__fastcall *get_mouse_fn)(void *self, void *edx, int *x, int *y);
 static get_mouse_fn get_mouse_orig;
 
 static void __fastcall get_mouse_hook(void *self, void *edx, int *x, int *y)
 {
-    DWORD caller = (DWORD)__builtin_return_address(0);
-    int i;
+    const struct hud_rule *rule;
+    DWORD callers[8];
+    int n;
 
     get_mouse_orig(self, edx, x, y);
     if (!x || !y) return;
-    for (i = 0; i < (int)(sizeof(hud_rules) / sizeof(hud_rules[0])); i++)
+    n = golf_callers(callers, 8);
+    rule = find_rule(callers, n, *x, *y);
+    if (rule && rule->anchor == ANCHOR_CENTER)
     {
-        const struct hud_rule *r = &hud_rules[i];
-        if (r->anchor != ANCHOR_CENTER || caller < r->start || caller >= r->end) continue;
         *x -= ((int)screen_w - 800) / 2;
         *y -= ((int)screen_h - 600) / 2;
-        break;
     }
 }
 
