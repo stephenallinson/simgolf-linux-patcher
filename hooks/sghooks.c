@@ -330,8 +330,8 @@ static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h
         {
             if (nseen < 4096) seen[nseen++] = key;
             draw_lines++;
-            log_msg("draw %s obj %p at %d,%d size %dx%d callers %08lx %08lx %08lx %08lx%s%s%s%s",
-                    what, obj, *x, *y, w, h, callers[0], callers[1], callers[2], callers[3],
+            log_msg("draw %s obj %p at %d,%d size %dx%d callers %08lx %08lx %08lx %08lx %08lx %08lx%s%s%s%s",
+                    what, obj, *x, *y, w, h, callers[0], callers[1], callers[2], callers[3], callers[4], callers[5],
                     rule ? " moved by " : "", rule ? rule->name : "",
                     text ? " text " : "", text ? text : "");
         }
@@ -494,6 +494,28 @@ static void *const palette_hook[PALETTE_FUNCS] =
     palette_hook_4, palette_hook_5, palette_hook_6, palette_hook_7,
 };
 
+/* Text menus and message boxes: uint __cdecl menu(center_x, top_y, flags, ?, ?)
+ * at 0x46d6e0 sizes, draws and runs a box (with its own mouse handling) from
+ * its position arguments, so moving those moves drawing and clicks together.
+ * The control wheel's pop-up menus (Information etc.) follow the wheel down;
+ * everything else is centred on the screen. */
+typedef unsigned int (__cdecl *menu_fn)(int x, int y, unsigned int flags, int a4, unsigned int a5);
+static menu_fn menu_orig;
+
+static unsigned int __cdecl menu_hook(int x, int y, unsigned int flags, int a4, unsigned int a5)
+{
+    DWORD caller = (DWORD)__builtin_return_address(0);
+
+    if (caller == 0x432820 || caller == 0x43292a || caller == 0x4329e2)
+        y += (int)screen_h - 600;   /* from the wheel's click handler */
+    else
+    {
+        x += ((int)screen_w - 800) / 2;
+        y += ((int)screen_h - 600) / 2;
+    }
+    return menu_orig(x, y, flags, a4, a5);
+}
+
 /* Move a cmp reg, imm32 boundary by delta (checks the instruction first). */
 static void move_boundary(const char *what, DWORD addr, const BYTE op[2], DWORD orig, int delta)
 {
@@ -526,6 +548,11 @@ static void hook_hud_input(void)
         if (prologue[0] != 0xa1) { log_msg("palette function %#lx: unexpected prologue, not hooked", palette_addr[i]); continue; }
         snprintf(what, sizeof(what), "tool palette function %#lx", palette_addr[i]);
         palette_orig[i] = install_hook(what, palette_addr[i], prologue, 5, palette_hook[i]);
+    }
+    {
+        static const BYTE menu_prologue[] = {0x83, 0xec, 0x48, 0x8b, 0x44, 0x24, 0x54};  /* sub esp,0x48; mov eax,[esp+0x54] */
+        menu_orig = install_hook("text menus and message boxes", 0x46d6e0, menu_prologue,
+                                 sizeof(menu_prologue), menu_hook);
     }
     move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
     move_boundary("bottom HUD click boundary (palette)", 0x41e459, cmp_ecx, 0x1e0, dy);
