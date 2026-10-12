@@ -211,6 +211,12 @@ static const struct hud_rule hud_rules[] =
     {"title screen", 0x420e35, 0x421610, ANCHOR_CENTER},
     /* world map ("Where will you build your golf course?", load/save game) */
     {"world map", 0x46f550, 0x470a00, ANCHOR_CENTER},
+    /* load game screen (0x43b610, with its save list) and its sibling 0x43a8c0,
+     * opened through 0x46ddd0 from the title screen and elsewhere */
+    {"load/save screen", 0x43a8c0, 0x43b610, ANCHOR_CENTER},
+    {"load/save screen", 0x43b610, 0x43cb50, ANCHOR_CENTER},
+    /* Top 10 Designers (from the wheel's Information menu) */
+    {"top 10 designers", 0x473470, 0x473a70, ANCHOR_CENTER},
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and
      * text, and their drop shadows (sprite +0x6c through 0x421b90) */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
