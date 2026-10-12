@@ -171,7 +171,7 @@ static void hook_windows(void)
 #define GOLF_TEXT_START  0x401000
 #define GOLF_TEXT_END    0x4b942b
 
-enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER };
+enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER, ANCHOR_NONE };
 
 /* A HUD part: draws issued from these golf.exe return addresses move together.
  * Some call sites draw several parts (e.g. a loop over panel shadows); those
@@ -187,6 +187,24 @@ struct hud_rule
 
 static const struct hud_rule hud_rules[] =
 {
+    /* text menus / message boxes (0x46d6e0) are moved by their own hook; this
+     * stops the report rules below from moving them a second time */
+    {"text menu", 0x46d6e0, 0x46dd0e, ANCHOR_NONE},
+    /* report and info windows: each darkens the screen with black.pcx, then
+     * draws itself at fixed 800x600 positions; centre them */
+    {"report", 0x44cff0, 0x44e770, ANCHOR_CENTER},
+    {"report", 0x44e770, 0x44f6b0, ANCHOR_CENTER},
+    {"report", 0x44f6b0, 0x44faf0, ANCHOR_CENTER},
+    {"report", 0x44fb30, 0x453260, ANCHOR_CENTER},
+    {"report", 0x453330, 0x4546b0, ANCHOR_CENTER},
+    {"report", 0x4546b0, 0x454c50, ANCHOR_CENTER},
+    {"report", 0x454c50, 0x455a30, ANCHOR_CENTER},
+    {"report", 0x455a30, 0x455ed0, ANCHOR_CENTER},
+    {"report", 0x455ed0, 0x456b70, ANCHOR_CENTER},
+    {"report", 0x459400, 0x459850, ANCHOR_CENTER},
+    {"report", 0x459850, 0x45a090, ANCHOR_CENTER},
+    {"report", 0x45a090, 0x45ae30, ANCHOR_CENTER},
+    {"report", 0x46e810, 0x46f1d0, ANCHOR_CENTER},
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and text */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
     /* HUD routine: translucent panel shadows, drawn for all panels from one call
@@ -304,7 +322,7 @@ static void anchor_offset(enum anchor a, int *dx, int *dy)
     *dx = *dy = 0;
     if (a == ANCHOR_RIGHT) *dx = screen_w - 800;
     else if (a == ANCHOR_BOTTOM) *dy = screen_h - 600;
-    else { *dx = (screen_w - 800) / 2; *dy = (screen_h - 600) / 2; }
+    else if (a == ANCHOR_CENTER) { *dx = (screen_w - 800) / 2; *dy = (screen_h - 600) / 2; }
 }
 
 /* Find the HUD rule for the current draw (innermost matching caller wins),
@@ -328,7 +346,8 @@ static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h
                 rule = r;
                 break;
             }
-    if (rule) anchor_offset(rule->anchor, &dx, &dy);
+    /* full-screen copies (backdrops) never move */
+    if (rule && !(w == (int)screen_w && h == (int)screen_h)) anchor_offset(rule->anchor, &dx, &dy);
 
     if (draw_log && draw_lines < 20000)
     {
@@ -412,6 +431,27 @@ static int __fastcall fill_hook(void *self, void *edx, int x, int y, int w, int 
     return fill_orig(self, edx, x, y, w, h, colour);
 }
 
+/* Sprite +0x94: blended draw (target, x, y, factor, clip, flag), ret 0x18.
+ * Report windows darken the screen by drawing interface\infoscreens\black.pcx,
+ * an 800x600 image held by the game image at 0x821040, at (0,0) with factor
+ * 0.25. On a bigger screen, tile it so the whole screen is darkened. */
+#define DIM_IMAGE 0x821040
+typedef int (__fastcall *draw6_fn)(void *self, void *edx, void *target, int x, int y, DWORD factor, void *clip, int flag);
+static draw6_fn spr_blend_94;
+
+static int __fastcall spr_blend_94_hook(void *self, void *edx, void *target, int x, int y, DWORD factor, void *clip, int flag)
+{
+    int ret = spr_blend_94(self, edx, target, x, y, factor, clip, flag);
+
+    if (x == 0 && y == 0 && self == *(void **)(DIM_IMAGE + 4) && is_screen(target))
+    {
+        if (screen_w > 800) spr_blend_94(self, edx, target, 800, 0, factor, clip, flag);
+        if (screen_h > 600) spr_blend_94(self, edx, target, 0, 600, factor, clip, flag);
+        if (screen_w > 800 && screen_h > 600) spr_blend_94(self, edx, target, 800, 600, factor, clip, flag);
+    }
+    return ret;
+}
+
 static void *swap_ptr(void **slot, void *hook)
 {
     void *orig = *slot;
@@ -469,6 +509,7 @@ static void hook_draws(const char *dir)
     spr_draw_44 = swap_ptr(&spr[0x44 / 4], spr_draw_44_hook);
     spr_draw_54 = swap_ptr(&spr[0x54 / 4], spr_draw_54_hook);
     spr_draw_40 = swap_ptr(&spr[0x40 / 4], spr_draw_40_hook);
+    spr_blend_94 = swap_ptr(&spr[0x94 / 4], spr_blend_94_hook);
     surf_blit_40 = swap_ptr(&surf[0x40 / 4], surf_blit_40_hook);
     real_TextOutA = hook_import(jgld, "GDI32.dll", "TextOutA", TextOutA_hook);
     {
@@ -540,6 +581,30 @@ static unsigned int __cdecl menu_hook(int x, int y, unsigned int flags, int a4, 
     return menu_orig(x, y, flags, a4, a5);
 }
 
+/* Mouse position: void __thiscall get_mouse(int *x, int *y) at 0x47ab50.
+ * Report windows run their own loops, reading the mouse here and comparing it
+ * with fixed 800x600 boxes (e.g. the close button); when the caller is inside a
+ * centred report, move the position back by the centring offset. */
+typedef void (__fastcall *get_mouse_fn)(void *self, void *edx, int *x, int *y);
+static get_mouse_fn get_mouse_orig;
+
+static void __fastcall get_mouse_hook(void *self, void *edx, int *x, int *y)
+{
+    DWORD caller = (DWORD)__builtin_return_address(0);
+    int i;
+
+    get_mouse_orig(self, edx, x, y);
+    if (!x || !y) return;
+    for (i = 0; i < (int)(sizeof(hud_rules) / sizeof(hud_rules[0])); i++)
+    {
+        const struct hud_rule *r = &hud_rules[i];
+        if (r->anchor != ANCHOR_CENTER || caller < r->start || caller >= r->end) continue;
+        *x -= ((int)screen_w - 800) / 2;
+        *y -= ((int)screen_h - 600) / 2;
+        break;
+    }
+}
+
 /* Move a cmp reg, imm32 boundary by delta (checks the instruction first). */
 static void move_boundary(const char *what, DWORD addr, const BYTE op[2], DWORD orig, int delta)
 {
@@ -578,6 +643,10 @@ static void hook_hud_input(void)
         static const BYTE menu_prologue[] = {0x83, 0xec, 0x48, 0x8b, 0x44, 0x24, 0x54};  /* sub esp,0x48; mov eax,[esp+0x54] */
         menu_orig = install_hook("text menus and message boxes", 0x46d6e0, menu_prologue,
                                  sizeof(menu_prologue), menu_hook);
+    }
+    {
+        static const BYTE mouse_prologue[] = {0x83, 0xec, 0x10, 0x53, 0x56};  /* sub esp,0x10; push ebx; push esi */
+        get_mouse_orig = install_hook("mouse position", 0x47ab50, mouse_prologue, sizeof(mouse_prologue), get_mouse_hook);
     }
     move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
     move_boundary("bottom HUD click boundary (palette)", 0x41e459, cmp_ecx, 0x1e0, dy);
