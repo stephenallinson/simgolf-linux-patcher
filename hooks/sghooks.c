@@ -811,18 +811,19 @@ static void patch_vertical_scale(void)
  *   0x44a6e0  tile sizes: mov eax, [0x820f30] (width), then
  *             cmp dword [0x820f34], 600 / 768 / 1024 (height) at 0x44a6f3,
  *             0x44a72a, 0x44a75c; any other size gets uninitialised values
- *   0x42fbcc  projection: mov edi, [0x822c8c] (width), then 1024 / 1280
- * Both read a tier picked from the screen height instead, so they agree and
+ *   0x42fbd8  projection: cmp edi, 1024 / cmp edi, 1280 (0x42fbe0) on the
+ *             screen width (edi is used again afterwards to centre objects,
+ *             so the compares change, not the load)
+ * Both follow a tier picked from the screen height instead, so they agree and
  * wide screens get a supported one. */
 static DWORD tier_w = 800, tier_h = 600;
 
 static void patch_course_tier(void)
 {
     static const BYTE tile_w[] = {0xa1, 0x30, 0x0f, 0x82, 0x00};
-    static const BYTE proj_w[] = {0x8b, 0x3d, 0x8c, 0x2c, 0x82, 0x00};
     static const DWORD cmp_sites[] = {0x44a6f3, 0x44a72a, 0x44a75c};
     static const DWORD cmp_imm[] = {600, 768, 1024};
-    BYTE new_tile[5], new_proj[6], old_cmp[10], new_cmp[10];
+    BYTE new_tile[5], old_cmp[10], new_cmp[10];
     DWORD pw = (DWORD)&tier_w, ph = (DWORD)&tier_h;
     int i;
 
@@ -844,9 +845,22 @@ static void patch_course_tier(void)
         snprintf(what, sizeof(what), "course tile sizes (height %lu)", cmp_imm[i]);
         patch_bytes(what, cmp_sites[i], old_cmp, new_cmp, sizeof(old_cmp));
     }
-    memcpy(new_proj, proj_w, 2);
-    memcpy(new_proj + 2, &pw, 4);
-    patch_bytes("course projection", 0x42fbcc, proj_w, new_proj, sizeof(proj_w));
+    {
+        /* the tier's compare matches the real width; a native width that
+         * isn't the tier's must match neither */
+        DWORD w1024 = tier_w == 1024 ? screen_w : screen_w == 1024 ? 0xffffffff : 1024;
+        DWORD w1280 = tier_w == 1280 ? screen_w : screen_w == 1280 ? 0xffffffff : 1280;
+        BYTE old_ins[6] = {0x81, 0xff}, new_ins[6] = {0x81, 0xff};
+        DWORD v = 1024;
+
+        memcpy(old_ins + 2, &v, 4);
+        memcpy(new_ins + 2, &w1024, 4);
+        if (w1024 != 1024) patch_bytes("course projection (1024)", 0x42fbd8, old_ins, new_ins, 6);
+        v = 1280;
+        memcpy(old_ins + 2, &v, 4);
+        memcpy(new_ins + 2, &w1280, 4);
+        if (w1280 != 1280) patch_bytes("course projection (1280)", 0x42fbe0, old_ins, new_ins, 6);
+    }
 }
 
 /* Terrain.dll has the same three sizes. Four places compare its width and
