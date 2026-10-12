@@ -200,6 +200,10 @@ static const struct hud_rule hud_rules[] =
     {"stats bars", 0x47c31f, 0x47c320, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     /* HUD routine's call to the control wheel (0x432ba0) */
     {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
+    /* HUD routine's call to 0x4321d0, which also draws the wheel's base */
+    {"control wheel", 0x419762, 0x419763, ANCHOR_BOTTOM},
+    /* HUD routine: golfer mood bar along the bottom (faces and numbers) */
+    {"mood bar", 0x418d40, 0x418eea, ANCHOR_BOTTOM},
     /* HUD routine's calls to the tool palette, one per palette mode:
      * 0x433190, 0x434350, 0x435760, 0x4362f0 (modes 3 and 4) */
     {"tool palette", 0x4197ea, 0x4197eb, ANCHOR_BOTTOM},
@@ -231,8 +235,8 @@ static int draw_lines;
 static int golf_callers(DWORD *out, int max)
 {
     NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
-    DWORD *sp = __builtin_frame_address(0), *end = sp + 512;
-    int n = 0;
+    DWORD *sp = __builtin_frame_address(0), *end = sp + 1024;
+    int n = 0, i;
 
     if ((void *)end > tib->StackBase) end = tib->StackBase;
     for (; sp < end && n < max; sp++)
@@ -240,9 +244,12 @@ static int golf_callers(DWORD *out, int max)
         DWORD a = *sp;
         const BYTE *c = (const BYTE *)a;
         if (a < GOLF_TEXT_START + 6 || a >= GOLF_TEXT_END) continue;
-        if (c[-5] == 0xe8 || (c[-6] == 0xff && (c[-5] & 0x38) == 0x10) ||
-            (c[-2] == 0xff && (c[-1] & 0x38) == 0x10) || (c[-3] == 0xff && (c[-2] & 0x38) == 0x10))
-            out[n++] = a;
+        if (!(c[-5] == 0xe8 || (c[-6] == 0xff && (c[-5] & 0x38) == 0x10) ||
+              (c[-2] == 0xff && (c[-1] & 0x38) == 0x10) || (c[-3] == 0xff && (c[-2] & 0x38) == 0x10)))
+            continue;
+        /* stale copies of a return address can sit in many stack slots; keep one */
+        for (i = 0; i < n && out[i] != a; i++);
+        if (i == n) out[n++] = a;
     }
     return n;
 }
