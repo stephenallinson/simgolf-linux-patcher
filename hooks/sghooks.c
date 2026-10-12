@@ -887,6 +887,16 @@ static const DWORD terrain_extent[3][2] =   /* mov [ebp+8], w / mov [ebp+0xc], h
 {
     {0x10009f57, 0x10009f5e}, {0x10009f79, 0x10009f80}, {0x10009f9b, 0x10009fa2},
 };
+/* setZoomLevel (0x10008fc0) has its own extents, as floats:
+ * mov [ebp-8], w / mov [ebp-0xc], h */
+static const DWORD terrain_zoom_extent[3][2] =
+{
+    {0x10009018, 0x1000901f}, {0x10009040, 0x10009047}, {0x10009068, 0x1000906f},
+};
+static const DWORD terrain_zoom_value[3][2] =   /* 1767.77 x 1325.83, 1810.19 x 1357.65, 1740.57 x 1392.46 */
+{
+    {0x44dcf88b, 0x44a5ba68}, {0x44e24630, 0x44a9b4a4}, {0x44d99242, 0x44ae0e9b},
+};
 
 static void patch_terrain_value(HMODULE terrain, const char *what, DWORD va, DWORD from, DWORD to)
 {
@@ -922,6 +932,18 @@ static void patch_terrain_tier(void)
                             (DWORD)(((ULONGLONG)ew * screen_w + tw[t] / 2) / tw[t]));
         patch_terrain_value(terrain, "Terrain view extent (height)", terrain_extent[t][1], eh,
                             (DWORD)(((ULONGLONG)eh * screen_h + th[t] / 2) / th[t]));
+    }
+    {
+        union { DWORD d; float f; } w, h;
+
+        w.d = terrain_zoom_value[t][0];
+        h.d = terrain_zoom_value[t][1];
+        w.f = w.f * screen_w / tw[t];
+        h.f = h.f * screen_h / th[t];
+        patch_terrain_value(terrain, "Terrain zoom extent (width)", terrain_zoom_extent[t][0],
+                            terrain_zoom_value[t][0], w.d);
+        patch_terrain_value(terrain, "Terrain zoom extent (height)", terrain_zoom_extent[t][1],
+                            terrain_zoom_value[t][1], h.d);
     }
 }
 
