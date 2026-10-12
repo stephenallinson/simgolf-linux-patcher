@@ -400,6 +400,18 @@ static BOOL WINAPI TextOutA_hook(HDC dc, int x, int y, LPCSTR str, int len)
     return real_TextOutA(dc, x, y, str, len);
 }
 
+/* Rectangle fill: int __thiscall fill(x, y, w, h, colour) at 0x480b00 (the
+ * mood bar's number boxes, among others). Draws through it follow the same
+ * HUD rules. */
+typedef int (__fastcall *fill_fn)(void *self, void *edx, int x, int y, int w, int h, unsigned int colour);
+static fill_fn fill_orig;
+
+static int __fastcall fill_hook(void *self, void *edx, int x, int y, int w, int h, unsigned int colour)
+{
+    place_draw("fill", self, &x, &y, w, h, NULL);
+    return fill_orig(self, edx, x, y, w, h, colour);
+}
+
 static void *swap_ptr(void **slot, void *hook)
 {
     void *orig = *slot;
@@ -459,6 +471,10 @@ static void hook_draws(const char *dir)
     spr_draw_40 = swap_ptr(&spr[0x40 / 4], spr_draw_40_hook);
     surf_blit_40 = swap_ptr(&surf[0x40 / 4], surf_blit_40_hook);
     real_TextOutA = hook_import(jgld, "GDI32.dll", "TextOutA", TextOutA_hook);
+    {
+        static const BYTE fill_prologue[] = {0x8b, 0x44, 0x24, 0x14, 0x8b, 0x54, 0x24, 0x10};  /* mov eax,[esp+0x14]; mov edx,[esp+0x10] */
+        fill_orig = install_hook("rectangle fill", 0x480b00, fill_prologue, sizeof(fill_prologue), fill_hook);
+    }
     log_msg("draw hooks: jgld.dll at %p, TextOutA %s", jgld, real_TextOutA ? "hooked" : "NOT hooked");
 }
 
