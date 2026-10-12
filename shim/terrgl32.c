@@ -530,3 +530,19 @@ void WINAPI shim_glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
     log_msg("glViewport %d,%d %dx%d", x, y, w, h);
     glViewport(x, y, w, h);
 }
+
+/* Load sghooks.dll (runtime patches for golf.exe) from this DLL's folder, if
+ * present. We're loaded at process start as a dependency of Terrain.dll, so
+ * this runs before golf.exe's own code. */
+BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
+{
+    char path[MAX_PATH], *slash;
+
+    if (reason != DLL_PROCESS_ATTACH) return TRUE;
+    DisableThreadLibraryCalls(inst);
+    if (!GetModuleFileNameA(inst, path, sizeof(path) - 16)) return TRUE;
+    if (!(slash = strrchr(path, '\\'))) return TRUE;
+    strcpy(slash + 1, "sghooks.dll");
+    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) LoadLibraryA(path);
+    return TRUE;
+}
