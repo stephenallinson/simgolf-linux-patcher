@@ -188,8 +188,12 @@ static const struct hud_rule hud_rules[] =
 {
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and text */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
-    /* HUD routine: translucent panel shadows, one call site for all panels */
+    /* HUD routine: translucent panel shadows, drawn for all panels from one call
+     * site and redrawn from three more */
     {"stats panel shadow", 0x40f84d, 0x40f84e, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
+    {"stats panel shadow", 0x420f11, 0x420f12, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
+    {"stats panel shadow", 0x42114b, 0x42114c, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
+    {"stats panel shadow", 0x4212d8, 0x4212d9, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     /* HUD routine's call to the control wheel (0x432ba0) */
     {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
 };
