@@ -849,6 +849,68 @@ static void patch_course_tier(void)
     patch_bytes("course projection", 0x42fbcc, proj_w, new_proj, sizeof(proj_w));
 }
 
+/* Terrain.dll has the same three sizes. Four places compare its width and
+ * height (this+0x20 / +0x24, or initSystem's arguments) with exactly 800x600,
+ * 1024x768 and 1280x1024 to pick tile sizes and, in initSystem, the extent of
+ * its glOrtho view (in world units); other sizes get nothing. For the tier in
+ * use, make its compares match the real screen size, and scale its extent by
+ * screen / tier size. Each site is a 7-byte instruction with its 32-bit value
+ * at offset 3 (addresses at Terrain.dll's preferred base 0x10000000). */
+#define TERRAIN_BASE 0x10000000
+static const DWORD terrain_cmp_w[3][4] =
+{
+    {0x100068d2, 0x10009003, 0x10009dec, 0x10009f45},   /* 800 */
+    {0x10006908, 0x1000902b, 0x10009e10, 0x10009f67},   /* 1024 */
+    {0x1000693e, 0x10009053, 0x10009e34, 0x10009f89},   /* 1280 */
+};
+static const DWORD terrain_cmp_h[3][4] =
+{
+    {0x100068de, 0x1000900f, 0x10009df8, 0x10009f4e},   /* 600 */
+    {0x10006914, 0x10009037, 0x10009e1c, 0x10009f70},   /* 768 */
+    {0x1000694a, 0x1000905f, 0x10009e40, 0x10009f92},   /* 1024 */
+};
+static const DWORD terrain_extent[3][2] =   /* mov [ebp+8], w / mov [ebp+0xc], h */
+{
+    {0x10009f57, 0x10009f5e}, {0x10009f79, 0x10009f80}, {0x10009f9b, 0x10009fa2},
+};
+
+static void patch_terrain_value(HMODULE terrain, const char *what, DWORD va, DWORD from, DWORD to)
+{
+    BYTE *p = (BYTE *)terrain + (va - TERRAIN_BASE);
+    BYTE old_ins[7], new_ins[7];
+
+    memcpy(old_ins, p, 3);   /* opcode and operand bytes, checked through the value */
+    memcpy(old_ins + 3, &from, 4);
+    memcpy(new_ins, p, 3);
+    memcpy(new_ins + 3, &to, 4);
+    patch_bytes(what, (DWORD)p, old_ins, new_ins, sizeof(old_ins));
+}
+
+static void patch_terrain_tier(void)
+{
+    static const DWORD tw[3] = {800, 1024, 1280}, th[3] = {600, 768, 1024};
+    HMODULE terrain = GetModuleHandleA("Terrain.dll");
+    int t, i;
+
+    t = tier_w == 1280 ? 2 : tier_w == 1024 ? 1 : 0;
+    if (screen_w == tw[t] && screen_h == th[t]) return;
+    if (!terrain) { log_msg("Terrain.dll not loaded, its sizes not patched"); return; }
+    for (i = 0; i < 4; i++)
+    {
+        patch_terrain_value(terrain, "Terrain size compare (width)", terrain_cmp_w[t][i], tw[t], screen_w);
+        patch_terrain_value(terrain, "Terrain size compare (height)", terrain_cmp_h[t][i], th[t], screen_h);
+    }
+    {
+        static const DWORD ext_w[3] = {0x6e7, 0x712, 0x6cc}, ext_h[3] = {0x52d, 0x517, 0x570};
+        DWORD ew = ext_w[t], eh = ext_h[t];
+
+        patch_terrain_value(terrain, "Terrain view extent (width)", terrain_extent[t][0], ew,
+                            (DWORD)(((ULONGLONG)ew * screen_w + tw[t] / 2) / tw[t]));
+        patch_terrain_value(terrain, "Terrain view extent (height)", terrain_extent[t][1], eh,
+                            (DWORD)(((ULONGLONG)eh * screen_h + th[t] / 2) / th[t]));
+    }
+}
+
 /* The game's main routine (0x45baf0) starts with
  *   mov dword [0x822c8c], 800   ; c7 05 8c 2c 82 00 20 03 00 00
  *   mov dword [0x822c90], 600   ; c7 05 90 2c 82 00 58 02 00 00
@@ -879,6 +941,7 @@ static void patch_resolution(void)
         patch_edge_scroll();
         patch_vertical_scale();
         patch_course_tier();
+        patch_terrain_tier();
     }
     log_msg("requested resolution %ux%u", w, h);
 }
