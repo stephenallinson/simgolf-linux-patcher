@@ -23,6 +23,15 @@ Logged in-process by terrgl32 (`TERRGL32_LOG`) under Wine 11.19:
 - Its visible import table is the wrapper's. The original import descriptors survive in `.rdata` (file offset 0xbdc08): binkw32, Terrain, KERNEL32, USER32, WINMM. The IAT is at 0x4ba000.
 - Exports four `Terrain` methods of its own: `tileAt`, `getElevation`, `getWall`, `getType` (0x4490d0 to 0x449150).
 - Loads the engine dynamically: data contains `"jgld.dll"` (file offset 0xd1704) and `"get_graphsy_object_ptr"`.
+- **Start-up: `FUN_0045baf0`** (the game's main routine):
+  - sets the screen size globals **`DAT_00822c8c = 800`, `DAT_00822c90 = 600`** (instructions at 0x45baf6 and 0x45bb00; the 32-bit operands are at **0x45bafc** and **0x45bb06**);
+  - starts the engine: `FUN_004855b0("jgld.dll", "Sid Meier's SimGolf", 0xffffffff)` → `FUN_004a00a0` (LoadLibraryA + GetProcAddress("get_graphsy_object_ptr"), object stored in **`DAT_0083ad50`**), then engine method 1 creates the window with **`&DAT_0083a7b8` as the screen surface/callback** (the engine calls its vtbl[0](w, h, bpp, 1) whenever the display size changes);
+  - sets the display mode: engine method 22 (`+0x58`) with `(800, 600, 16)`;
+  - creates the main window object and the screen-sized surface with `FUN_00404970(320) x FUN_00404970(240)`;
+  - registers fonts (Arial Bold, Manual SSi Bold from `manu3_.ttf`, Klepto ITC from `klepto_.ttf`, Comic Sans MS Bold, Times New Roman Bold), builds a 64K-entry 16-bit color table, then enters the game.
+- **Partial resolution independence:** `FUN_00404970(x) = (DAT_00822c8c * x + 160) / 320` scales a 320-wide base layout to the screen width (used for both axes, so it assumes 4:3). Only 21 call sites use it, and only 14 functions read the size globals; about 89 literal `800`s and 84 literal `600`s remain, plus other absolute UI coordinates.
+- **Surfaces:** `FUN_00474dd0(w, h, depth, ...)` creates an off-screen surface through engine method 31 (`+0x7c`), which returns a surface object whose `+0x4` method allocates it. golf.exe creates 800x600 screen buffers (`FUN_0044bde0`, `FUN_0044b9c0`, `FUN_0044cff0`, `FUN_0044e770`, `FUN_0045f0f0`) and **1024x800** course buffers (`FUN_00442180`, `FUN_0043cd70`, `FUN_0043dbe0`), the 1024x800 16bpp DIB seen in the GDI traces. `FUN_00473bf0` / `FUN_00473c60(surface, x, y, w, h, ...)` fill or copy rectangles at absolute coordinates (UI layout).
+- Engine method offsets golf.exe uses (`*DAT_0083ad50 + off`): 0x10, 0x20 (HWND getter), 0x24 (HINSTANCE), 0x2c, 0x30, 0x38, 0x58 (set mode), 0x74–0xc4, and up to 0x150. 0x9c and 0xb4 are the most frequent (roles not yet identified).
 - Picks the Terrain orientation from the OS version: after `GetVersionExA`, a major version of 5 or more sets the byte at 0x820f28, which is passed as `Terrain::initSystem`'s bool (call at 0x449841).
 
 ## jgld.dll: the "Jackal" engine
