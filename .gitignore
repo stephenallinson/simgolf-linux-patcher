@@ -10,3 +10,4 @@ dist/
 
 # Local reverse-engineering workspace (Ghidra projects, decompiled game code): never publish
 re-work/
+tools/xdrive/xdrive

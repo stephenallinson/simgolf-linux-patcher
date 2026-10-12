@@ -103,3 +103,25 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
 - **Panel drop shadows:** sprite method `+0x6c` (target, x, y, ?, clip), ret 0x14.
 - **Main window object:** 0x519a60. `FUN_00480b00` fills through it onto the screen.
 - **Scaling helper `FUN_00404970`:** window heights (0x45bbd4, 0x45be6d: scale(240)) and font sizes (0x45be22, 0x45be3c) are redirected to a height-based version for wide screens. Still width-based: mouse → 320-space conversions (0x46558x–0x46586x, 0x46e01b/36) and a box at 0x46e451–0x46e490 (h, w, y, x → `FUN_0040d0b0`), 0x46e719–0x46e73d, 0x404a92/9e.
+
+## Status and next steps (2026-10-12)
+
+**Working with sghooks** (`SIMGOLF_RES=WxH`, tested at 1024x768 and 1280x720):
+- The HUD is anchored to the screen edges: stats panel and its drop shadows, control wheel, tool palette, mood bar.
+- Centred: reports, with clicks and darkening covering the whole screen; the title screen and the screens it opens; the world map; the load/save screens, including file-list clicks; Top 10 Designers; Professional Accomplishments.
+- Speech bubble along the top (`FUN_0040d320`): centred horizontally.
+- Widescreen sizes:
+  - window heights and fonts use height-based scaling;
+  - the course size class (tier) is chosen from the screen height: <700 → 800x600, 700–899 → 1024x768, ≥900 → 1280x1024;
+  - in golf.exe, the tile table (0x44a6e0) and the projection compares (0x42fbd8 / 0x42fbe0) follow the tier;
+  - in Terrain.dll, the size compares follow the real size, and the view extent in `initSystem` and `setZoomLevel` is scaled by screen/tier.
+- **At 1280x720 this matches native 1024x768**, checked by screenshot comparison after loading and after zooming.
+
+**Open:**
+1. **The ground drifts vertically from objects after panning** (9–19 px, varying by region, horizontal 0). A redraw fixes it (zoom out, then in). **It also happens at native 1024x768**, so it isn't caused by widescreen. Next step: run the same pan-then-redraw test at 800x600. If 800x600 drifts too, it's the terrgl32 shim (strip render after scroll). If not, it's the original game's 1024 tier, where the projection's y-scale is 1.3 and x-scale 1.25, and the scroll copies the screen by tile-size steps. That test was interrupted before it ran.
+2. **The golfer list** (palette mode 3/4) adds columns to fill the screen width and runs past its 800-wide panel.
+3. **A flag sprite drawn at a fixed screen position** (~363,490) at 1024+, at every zoom level. Its source is unknown, and it may also exist at 800x600.
+4. Not yet checked at widescreen: the darkening behind reports, the bottom message ticker, and golfer speech-bubble clamps (0x416919: x 50–720, y 50–520 in 800x600 terms).
+5. `make-release.sh` doesn't ship sghooks yet, and the README doesn't document `SIMGOLF_RES`.
+
+**Testing without the monitor:** `tools/xdrive/load-save.sh WxH :77` runs the game on a private Xvfb display, skips the intro and loads the 8th save. Then use `DISPLAY=:77 tools/xdrive/xdrive click X Y` / `key Escape` and `DISPLAY=:77 import -window root shot.png`. Wheel buttons at 1280x720: + (32,662), − (32,708). At 1024x768 they're 48 px lower. Only one game can run per Wine prefix. Stop it with `WINEPREFIX=~/.wine-simgolf wineserver -k; pkill -f '^Xvfb :7'`. Don't use `pkill -f golf.exe`: it matches the shell running it.
