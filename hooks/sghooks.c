@@ -770,6 +770,36 @@ static void patch_edge_scroll(void)
     patch_bytes("edge scroll bottom", 0x41e1a3, orig_y, new_y, sizeof(orig_y));
 }
 
+/* The game scales a 320x240 layout with int __cdecl scale(v) at 0x404970,
+ * (screen_w * v + 160) / 320, for both axes, which assumes 4:3. Vertical
+ * uses get (screen_h * v + 120) / 240 instead (the same at 4:3):
+ *   0x45bbd4, 0x45be6d  main window heights, scale(240)
+ *   0x45be22, 0x45be3c  font sizes, so text keeps its size relative to the
+ *                       screen height on wide screens */
+#define SCALE_FN 0x404970
+static int __cdecl scale_y(int v)
+{
+    return ((int)screen_h * v + 120) / 240;
+}
+
+static void redirect_call(const char *what, DWORD site, DWORD from, void *to)
+{
+    BYTE old_ins[5] = {0xe8}, new_ins[5] = {0xe8};
+    DWORD old_rel = from - (site + 5), new_rel = (DWORD)to - (site + 5);
+
+    memcpy(old_ins + 1, &old_rel, 4);
+    memcpy(new_ins + 1, &new_rel, 4);
+    patch_bytes(what, site, old_ins, new_ins, sizeof(old_ins));
+}
+
+static void patch_vertical_scale(void)
+{
+    redirect_call("main window height", 0x45bbd4, SCALE_FN, scale_y);
+    redirect_call("main window height (second)", 0x45be6d, SCALE_FN, scale_y);
+    redirect_call("font size", 0x45be22, SCALE_FN, scale_y);
+    redirect_call("font size (second)", 0x45be3c, SCALE_FN, scale_y);
+}
+
 /* The game's main routine (0x45baf0) starts with
  *   mov dword [0x822c8c], 800   ; c7 05 8c 2c 82 00 20 03 00 00
  *   mov dword [0x822c90], 600   ; c7 05 90 2c 82 00 58 02 00 00
@@ -798,6 +828,7 @@ static void patch_resolution(void)
         screen_w = w;
         screen_h = h;
         patch_edge_scroll();
+        patch_vertical_scale();
     }
     log_msg("requested resolution %ux%u", w, h);
 }

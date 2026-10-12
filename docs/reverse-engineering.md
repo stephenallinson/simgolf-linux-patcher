@@ -92,3 +92,14 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
 
 - Ghidra 12.1.2 headless: `/opt/ghidra/support/analyzeHeadless <proj> <name> -import <bin> -postScript DecompileAll.java <outdir>` dumps decompiled C (script in `tools/ghidra/`). For golf.exe, add `-preScript MarkTextExecutable.java`.
 - `tools/trace-run.sh`, `tools/audio-trace.sh`, `tools/audio-dump.sh`: traced runs (see each script).
+
+## Screens centred at higher resolutions (sghooks)
+
+- **Title screen:** inside the main routine: first draw 0x40f7a0–0x40f9fc, loop 0x420e35–0x421610. Backdrop `interface\TitleBase.pcx` loaded into 0x568d10 and stretched 800x600 → screen through `FUN_00475d00(target, sx, sy, sw, sh, dx, dy, dw, dh)`; buttons hit-tested by distance (`FUN_0040acd0`) from the mouse (0x421050). Also `logo.pcx` and `interface//Pictbckgrnd1.pcx` screens, and `FUN_0043a400` called from it.
+- **World map:** `FUN_0046f550` (0x46f550–0x470a00; `FUN_00470a00` jumps to it), `interface\WorldBase.pcx`; reads the mouse at 0x47016d / 0x4703de against fixed button positions.
+- **Load / save screens:** `FUN_0043b610` / `FUN_0043a8c0`, reached through `FUN_0046ddd0`. They run the window system (`FUN_0043d2a0`, 0x4a5xxx); the file list's items are drawn by a callback at 0x40bac9 more than 8 return addresses deep. The list tests the click globals directly: `cmp [0x822d60], 0x140` (x > 320) then `mov eax, [0x822d64]`, row = (y − 116) / 16, at 0x43c7ab and 0x43b3b1.
+- **Top 10 Designers:** `FUN_00473470` (copies an 800x600 backdrop to (0,0), then tiles).
+- **Professional Accomplishments:** `FUN_0046e810` (a report range).
+- **Panel drop shadows:** sprite method `+0x6c` (target, x, y, ?, clip), ret 0x14.
+- **Main window object:** 0x519a60. `FUN_00480b00` fills through it onto the screen.
+- **Scaling helper `FUN_00404970`:** window heights (0x45bbd4, 0x45be6d: scale(240)) and font sizes (0x45be22, 0x45be3c) are redirected to a height-based version for wide screens. Still width-based: mouse → 320-space conversions (0x46558x–0x46586x, 0x46e01b/36) and a box at 0x46e451–0x46e490 (h, w, y, x → `FUN_0040d0b0`), 0x46e719–0x46e73d, 0x404a92/9e.
