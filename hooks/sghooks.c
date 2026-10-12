@@ -172,18 +172,24 @@ static void hook_windows(void)
 
 enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER };
 
-/* A HUD part: draws issued from these golf.exe return addresses move together. */
+/* A HUD part: draws issued from these golf.exe return addresses move together.
+ * Some call sites draw several parts (e.g. a loop over panel shadows); those
+ * rules also filter on the draw's original 800x600 position. */
 struct hud_rule
 {
     const char *name;
-    DWORD start, end;   /* return addresses in [start, end) */
+    DWORD start, end;          /* return addresses in [start, end) */
     enum anchor anchor;
+    BOOL filter;               /* only draws with x in [x0, x1) and y in [y0, y1) */
+    int x0, x1, y0, y1;
 };
 
 static const struct hud_rule hud_rules[] =
 {
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and text */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
+    /* HUD routine: translucent panel shadows, one call site for all panels */
+    {"stats panel shadow", 0x40f84d, 0x40f84e, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     /* HUD routine's call to the control wheel (0x432ba0) */
     {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
 };
@@ -255,7 +261,13 @@ static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h
     if (screen_w != 800 || screen_h != 600)
         for (i = 0; i < n && !rule; i++)
             for (j = 0; j < (int)(sizeof(hud_rules) / sizeof(hud_rules[0])); j++)
-                if (callers[i] >= hud_rules[j].start && callers[i] < hud_rules[j].end) { rule = &hud_rules[j]; break; }
+            {
+                const struct hud_rule *r = &hud_rules[j];
+                if (callers[i] < r->start || callers[i] >= r->end) continue;
+                if (r->filter && (*x < r->x0 || *x >= r->x1 || *y < r->y0 || *y >= r->y1)) continue;
+                rule = r;
+                break;
+            }
     if (rule) anchor_offset(rule->anchor, &dx, &dy);
 
     if (draw_log && draw_lines < 20000)
@@ -407,6 +419,25 @@ static void hook_hud_input(void)
                                   sizeof(wheel_prologue), wheel_hit_hook);
 }
 
+/* Edge scrolling (main loop, after reading the mouse at 0x41e174) pans when
+ *   x >= 799: cmp edx, 0x31f at 0x41e199 (81 fa 1f 03 00 00)
+ *   y >= 599: cmp esi, 0x257 at 0x41e1a3 (81 fe 57 02 00 00)
+ * i.e. the last column and row of an 800x600 screen. */
+static void patch_edge_scroll(void)
+{
+    static const BYTE orig_x[] = {0x81, 0xfa, 0x1f, 0x03, 0x00, 0x00};
+    static const BYTE orig_y[] = {0x81, 0xfe, 0x57, 0x02, 0x00, 0x00};
+    BYTE new_x[sizeof(orig_x)], new_y[sizeof(orig_y)];
+    DWORD last_x = screen_w - 1, last_y = screen_h - 1;
+
+    memcpy(new_x, orig_x, sizeof(new_x));
+    memcpy(new_y, orig_y, sizeof(new_y));
+    memcpy(new_x + 2, &last_x, 4);
+    memcpy(new_y + 2, &last_y, 4);
+    patch_bytes("edge scroll right", 0x41e199, orig_x, new_x, sizeof(orig_x));
+    patch_bytes("edge scroll bottom", 0x41e1a3, orig_y, new_y, sizeof(orig_y));
+}
+
 /* The game's main routine (0x45baf0) starts with
  *   mov dword [0x822c8c], 800   ; c7 05 8c 2c 82 00 20 03 00 00
  *   mov dword [0x822c90], 600   ; c7 05 90 2c 82 00 58 02 00 00
@@ -434,6 +465,7 @@ static void patch_resolution(void)
     {
         screen_w = w;
         screen_h = h;
+        patch_edge_scroll();
     }
     log_msg("requested resolution %ux%u", w, h);
 }
