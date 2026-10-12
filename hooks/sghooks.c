@@ -11,8 +11,8 @@
  *                     screen edge
  *   SGHOOKS_LOG=path  Windows path for a log file (also lists every UI window
  *                     the game creates)
- *   SGHOOKS_DRAWLOG=1 also log every distinct draw onto a screen-sized surface
- *                     (with SGHOOKS_LOG), for mapping the HUD
+ *   SGHOOKS_DRAWLOG=1 also log every distinct draw onto the screen (with
+ *                     SGHOOKS_LOG), for mapping the HUD
  */
 #include <windows.h>
 #include <stdarg.h>
@@ -155,10 +155,14 @@ static void hook_windows(void)
                                      window_setup_hook);
 }
 
-/* ---- draw logger (SGHOOKS_DRAWLOG) ----
- * Replaces draw methods in jgld.dll's sprite and surface vtables and logs each
- * distinct draw onto a screen-sized surface, with the golf.exe return addresses
- * found on the stack. Preferred-base addresses; jgld.dll is rebased at runtime. */
+/* ---- draw hooks: HUD placement and the draw log ----
+ * The HUD is drawn straight onto the screen at 800x600 positions, through
+ * jgld.dll's sprite/surface draw methods and GDI TextOutA. We replace those in
+ * jgld.dll's vtables and import table. For each draw onto the screen, the
+ * golf.exe return addresses on the stack identify which HUD part is drawing;
+ * a matching rule moves it to the right or bottom edge of the real screen.
+ * With SGHOOKS_DRAWLOG=1, every distinct draw is also logged.
+ * Addresses are jgld.dll's preferred base; it is rebased at runtime. */
 #define JGLD_BASE        0x10000000
 #define JGLD_IMAGE_SIZE  0x13a000
 #define SPRITE_VTBL      0x1011d380
@@ -166,18 +170,39 @@ static void hook_windows(void)
 #define GOLF_TEXT_START  0x401000
 #define GOLF_TEXT_END    0x4b942b
 
+enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER };
+
+/* A HUD part: draws issued from these golf.exe return addresses move together. */
+struct hud_rule
+{
+    const char *name;
+    DWORD start, end;   /* return addresses in [start, end) */
+    enum anchor anchor;
+};
+
+static const struct hud_rule hud_rules[] =
+{
+    /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and text */
+    {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
+    /* HUD routine's call to the control wheel (0x432ba0) */
+    {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
+};
+
 typedef int (__fastcall *getter_fn)(void *self, void *edx);
 typedef int (__fastcall *draw4_fn)(void *self, void *edx, void *a, int b, int c, void *d);
 typedef int (__fastcall *draw5_fn)(void *self, void *edx, void *a, void *b, int c, int d, void *e);
 typedef int (__fastcall *rect3_fn)(void *self, void *edx, void *target, RECT *src, RECT *dst);
+typedef BOOL (WINAPI *textout_fn)(HDC, int, int, LPCSTR, int);
 
 static draw4_fn spr_draw_5c, spr_draw_44;
 static draw5_fn spr_draw_54, spr_draw_40;
 static rect3_fn surf_blit_40;
+static textout_fn real_TextOutA;
+static BOOL draw_log;
 static int draw_lines;
 
 /* Return addresses into golf.exe's .text found on the stack (each must follow
- * a call instruction). */
+ * a call instruction), innermost first. */
 static int golf_callers(DWORD *out, int max)
 {
     NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
@@ -185,7 +210,6 @@ static int golf_callers(DWORD *out, int max)
     int n = 0;
 
     if ((void *)end > tib->StackBase) end = tib->StackBase;
-
     for (; sp < end && n < max; sp++)
     {
         DWORD a = *sp;
@@ -198,69 +222,109 @@ static int golf_callers(DWORD *out, int max)
     return n;
 }
 
-static BOOL screen_sized(void *target)
+static BOOL is_screen(void *target)
 {
     void **vtbl;
-    int w, h;
 
-    if (!target) return FALSE;
+    if (!target || !target_surface_vtbl) return FALSE;
     vtbl = *(void ***)target;
-    if (vtbl != (void **)target_surface_vtbl) return FALSE;
-    w = ((getter_fn)vtbl[0xd8 / 4])(target, NULL);
-    h = ((getter_fn)vtbl[0xdc / 4])(target, NULL);
-    return w == (int)screen_w && h == (int)screen_h;
+    if (vtbl != target_surface_vtbl) return FALSE;
+    return ((getter_fn)vtbl[0xd8 / 4])(target, NULL) == (int)screen_w &&
+           ((getter_fn)vtbl[0xdc / 4])(target, NULL) == (int)screen_h;
 }
 
-/* Log a draw once per (method, callers, position). */
-static void log_draw(const char *what, void *obj, void *target, int x, int y, int w, int h)
+static void anchor_offset(enum anchor a, int *dx, int *dy)
+{
+    *dx = *dy = 0;
+    if (a == ANCHOR_RIGHT) *dx = screen_w - 800;
+    else if (a == ANCHOR_BOTTOM) *dy = screen_h - 600;
+    else { *dx = (screen_w - 800) / 2; *dy = (screen_h - 600) / 2; }
+}
+
+/* Find the HUD rule for the current draw (innermost matching caller wins),
+ * add its offset to x/y, and log the draw if asked. */
+static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h, const char *text)
 {
     static DWORD seen[4096];
     static int nseen;
-    DWORD callers[4] = {0}, key;
-    int n, i;
+    DWORD callers[8] = {0}, key;
+    const struct hud_rule *rule = NULL;
+    int n, i, j, dx = 0, dy = 0;
 
-    if (!screen_sized(target) || draw_lines > 20000) return;
-    n = golf_callers(callers, 4);
-    key = (DWORD)what * 31 + callers[0] * 7 + callers[1] * 3 + callers[2] + x * 131071 + y * 8191;
-    for (i = 0; i < nseen; i++) if (seen[i] == key) return;
-    if (nseen < 4096) seen[nseen++] = key;
-    draw_lines++;
-    log_msg("draw %s obj %p at %d,%d size %dx%d callers %08lx %08lx %08lx %08lx",
-            what, obj, x, y, w, h, callers[0], callers[1], callers[2], callers[3]);
-    (void)n;
+    n = golf_callers(callers, 8);
+    if (screen_w != 800 || screen_h != 600)
+        for (i = 0; i < n && !rule; i++)
+            for (j = 0; j < (int)(sizeof(hud_rules) / sizeof(hud_rules[0])); j++)
+                if (callers[i] >= hud_rules[j].start && callers[i] < hud_rules[j].end) { rule = &hud_rules[j]; break; }
+    if (rule) anchor_offset(rule->anchor, &dx, &dy);
+
+    if (draw_log && draw_lines < 20000)
+    {
+        key = (DWORD)what * 31 + callers[0] * 7 + callers[1] * 3 + callers[2] + *x * 131071 + *y * 8191;
+        for (i = 0; i < nseen && seen[i] != key; i++);
+        if (i == nseen)
+        {
+            if (nseen < 4096) seen[nseen++] = key;
+            draw_lines++;
+            log_msg("draw %s obj %p at %d,%d size %dx%d callers %08lx %08lx %08lx %08lx%s%s%s%s",
+                    what, obj, *x, *y, w, h, callers[0], callers[1], callers[2], callers[3],
+                    rule ? " moved by " : "", rule ? rule->name : "",
+                    text ? " text " : "", text ? text : "");
+        }
+    }
+    *x += dx;
+    *y += dy;
 }
 
 static int __fastcall spr_draw_5c_hook(void *self, void *edx, void *target, int x, int y, void *clip)
 {
-    log_draw("sprite", self, target, x, y, 0, 0);
+    if (is_screen(target)) place_draw("sprite", self, &x, &y, 0, 0, NULL);
     return spr_draw_5c(self, edx, target, x, y, clip);
 }
 
 static int __fastcall spr_draw_44_hook(void *self, void *edx, void *target, int x, int y, void *clip)
 {
-    log_draw("sprite-scaled", self, target, x, y, 0, 0);
+    if (is_screen(target)) place_draw("sprite-scaled", self, &x, &y, 0, 0, NULL);
     return spr_draw_44(self, edx, target, x, y, clip);
 }
 
 static int __fastcall spr_draw_54_hook(void *self, void *edx, void *a, void *target, int x, int y, void *clip)
 {
-    log_draw("sprite-54", self, target, x, y, 0, 0);
+    if (is_screen(target)) place_draw("sprite-54", self, &x, &y, 0, 0, NULL);
     return spr_draw_54(self, edx, a, target, x, y, clip);
 }
 
 static int __fastcall spr_draw_40_hook(void *self, void *edx, void *target, void *b, int x, int y, void *clip)
 {
-    log_draw("sprite-40", self, target, x, y, 0, 0);
+    if (is_screen(target)) place_draw("sprite-40", self, &x, &y, 0, 0, NULL);
     return spr_draw_40(self, edx, target, b, x, y, clip);
 }
 
 static int __fastcall surf_blit_40_hook(void *self, void *edx, void *target, RECT *src, RECT *dst)
 {
-    if (dst) log_draw("blit", self, target, dst->left, dst->top, dst->right - dst->left, dst->bottom - dst->top);
-    return surf_blit_40(self, edx, target, src, dst);
+    RECT moved;
+    int x, y;
+
+    if (!dst || !is_screen(target)) return surf_blit_40(self, edx, target, src, dst);
+    x = dst->left;
+    y = dst->top;
+    place_draw("blit", self, &x, &y, dst->right - dst->left, dst->bottom - dst->top, NULL);
+    moved = *dst;
+    OffsetRect(&moved, x - dst->left, y - dst->top);
+    return surf_blit_40(self, edx, target, src, &moved);
 }
 
-static void *swap_vtbl(void **slot, void *hook)
+/* jgld.dll draws text with GDI onto the back buffer's DC. */
+static BOOL WINAPI TextOutA_hook(HDC dc, int x, int y, LPCSTR str, int len)
+{
+    char buf[40] = "";
+
+    if (draw_log && str) lstrcpynA(buf, str, len + 1 < (int)sizeof(buf) ? len + 1 : (int)sizeof(buf));
+    place_draw("text", dc, &x, &y, 0, 0, draw_log ? buf : NULL);
+    return real_TextOutA(dc, x, y, str, len);
+}
+
+static void *swap_ptr(void **slot, void *hook)
 {
     void *orig = *slot;
     DWORD old;
@@ -271,6 +335,30 @@ static void *swap_vtbl(void **slot, void *hook)
     return orig;
 }
 
+/* Replace an imported function in a module's import address table. */
+static void *hook_import(HMODULE mod, const char *dll, const char *func, void *hook)
+{
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)mod + ((IMAGE_DOS_HEADER *)mod)->e_lfanew);
+    IMAGE_DATA_DIRECTORY *dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    IMAGE_IMPORT_DESCRIPTOR *imp = (IMAGE_IMPORT_DESCRIPTOR *)((BYTE *)mod + dir->VirtualAddress);
+
+    for (; imp->Name; imp++)
+    {
+        IMAGE_THUNK_DATA *names, *iat;
+        if (_stricmp((char *)mod + imp->Name, dll)) continue;
+        names = (IMAGE_THUNK_DATA *)((BYTE *)mod + (imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk));
+        iat = (IMAGE_THUNK_DATA *)((BYTE *)mod + imp->FirstThunk);
+        for (; names->u1.AddressOfData; names++, iat++)
+        {
+            IMAGE_IMPORT_BY_NAME *ibn;
+            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
+            ibn = (IMAGE_IMPORT_BY_NAME *)((BYTE *)mod + names->u1.AddressOfData);
+            if (!strcmp((char *)ibn->Name, func)) return swap_ptr((void **)&iat->u1.Function, hook);
+        }
+    }
+    return NULL;
+}
+
 static void hook_draws(const char *dir)
 {
     char path[MAX_PATH + 16];
@@ -279,22 +367,44 @@ static void hook_draws(const char *dir)
     void **spr, **surf;
 
     snprintf(path, sizeof(path), "%s\\jgld.dll", dir);
-    if (!(jgld = LoadLibraryA(path))) { log_msg("draw log: can't load %s", path); return; }
+    if (!(jgld = LoadLibraryA(path))) { log_msg("draw hooks: can't load %s", path); return; }
     nt = (IMAGE_NT_HEADERS *)((BYTE *)jgld + ((IMAGE_DOS_HEADER *)jgld)->e_lfanew);
     if (nt->OptionalHeader.SizeOfImage != JGLD_IMAGE_SIZE)
     {
-        log_msg("draw log: unexpected jgld.dll (size %#lx), not hooked", nt->OptionalHeader.SizeOfImage);
+        log_msg("draw hooks: unexpected jgld.dll (size %#lx), not hooked", nt->OptionalHeader.SizeOfImage);
         return;
     }
     spr = (void **)((BYTE *)jgld + (SPRITE_VTBL - JGLD_BASE));
     surf = (void **)((BYTE *)jgld + (SURFACE_VTBL - JGLD_BASE));
     target_surface_vtbl = surf;
-    spr_draw_5c = swap_vtbl(&spr[0x5c / 4], spr_draw_5c_hook);
-    spr_draw_44 = swap_vtbl(&spr[0x44 / 4], spr_draw_44_hook);
-    spr_draw_54 = swap_vtbl(&spr[0x54 / 4], spr_draw_54_hook);
-    spr_draw_40 = swap_vtbl(&spr[0x40 / 4], spr_draw_40_hook);
-    surf_blit_40 = swap_vtbl(&surf[0x40 / 4], surf_blit_40_hook);
-    log_msg("draw log: hooked jgld.dll at %p", jgld);
+    spr_draw_5c = swap_ptr(&spr[0x5c / 4], spr_draw_5c_hook);
+    spr_draw_44 = swap_ptr(&spr[0x44 / 4], spr_draw_44_hook);
+    spr_draw_54 = swap_ptr(&spr[0x54 / 4], spr_draw_54_hook);
+    spr_draw_40 = swap_ptr(&spr[0x40 / 4], spr_draw_40_hook);
+    surf_blit_40 = swap_ptr(&surf[0x40 / 4], surf_blit_40_hook);
+    real_TextOutA = hook_import(jgld, "GDI32.dll", "TextOutA", TextOutA_hook);
+    log_msg("draw hooks: jgld.dll at %p, TextOutA %s", jgld, real_TextOutA ? "hooked" : "NOT hooked");
+}
+
+/* ---- HUD click handling ----
+ * Each moved HUD part's hit test gets the mouse position moved back by the
+ * same offset, so the game's own 800x600 button logic still works. */
+
+/* Control wheel: int __cdecl hit_test(x, y) at 0x4326a0, nearest button or -1. */
+typedef int (__cdecl *wheel_hit_fn)(int x, int y);
+static wheel_hit_fn wheel_hit_orig;
+
+static int __cdecl wheel_hit_hook(int x, int y)
+{
+    return wheel_hit_orig(x, y - ((int)screen_h - 600));
+}
+
+static void hook_hud_input(void)
+{
+    static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
+
+    wheel_hit_orig = install_hook("control wheel hit test", 0x4326a0, wheel_prologue,
+                                  sizeof(wheel_prologue), wheel_hit_hook);
 }
 
 /* The game's main routine (0x45baf0) starts with
@@ -344,12 +454,14 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
     if (_stricmp(name ? name + 1 : exe, "golf.exe")) return TRUE;
     patch_resolution();
     if (log_file || screen_w != 800 || screen_h != 600) hook_windows();
-    if (log_file && GetEnvironmentVariableA("SGHOOKS_DRAWLOG", path, sizeof(path)))
+    draw_log = log_file && GetEnvironmentVariableA("SGHOOKS_DRAWLOG", path, sizeof(path));
+    if (draw_log || screen_w != 800 || screen_h != 600)
     {
         char dir[MAX_PATH], *slash;
         GetModuleFileNameA(inst, dir, sizeof(dir));
         if ((slash = strrchr(dir, '\\'))) *slash = 0;
         hook_draws(dir);
     }
+    if (screen_w != 800 || screen_h != 600) hook_hud_input();
     return TRUE;
 }
