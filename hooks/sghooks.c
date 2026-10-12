@@ -247,6 +247,39 @@ static BOOL is_screen(void *target)
            ((getter_fn)vtbl[0xdc / 4])(target, NULL) == (int)screen_h;
 }
 
+/* Size of a jgld surface, or 0x0 if target isn't one. */
+static void surface_size(void *target, int *w, int *h)
+{
+    void **vtbl;
+
+    *w = *h = 0;
+    if (!target || !target_surface_vtbl) return;
+    vtbl = *(void ***)target;
+    if (vtbl != target_surface_vtbl) return;
+    *w = ((getter_fn)vtbl[0xd8 / 4])(target, NULL);
+    *h = ((getter_fn)vtbl[0xdc / 4])(target, NULL);
+}
+
+/* With the draw log on, also log draws into off-screen surfaces (never moved). */
+static void log_offscreen(const char *what, void *obj, void *target, int x, int y)
+{
+    static DWORD seen[4096];
+    static int nseen;
+    DWORD callers[4] = {0}, key;
+    int i, w, h;
+
+    if (!draw_log || draw_lines >= 20000) return;
+    surface_size(target, &w, &h);
+    golf_callers(callers, 4);
+    key = (DWORD)what * 31 + callers[0] * 7 + callers[1] * 3 + callers[2] + x * 131071 + y * 8191 + w;
+    for (i = 0; i < nseen && seen[i] != key; i++);
+    if (i < nseen) return;
+    if (nseen < 4096) seen[nseen++] = key;
+    draw_lines++;
+    log_msg("offscreen %s obj %p at %d,%d into %p %dx%d callers %08lx %08lx %08lx %08lx",
+            what, obj, x, y, target, w, h, callers[0], callers[1], callers[2], callers[3]);
+}
+
 static void anchor_offset(enum anchor a, int *dx, int *dy)
 {
     *dx = *dy = 0;
@@ -299,24 +332,28 @@ static void place_draw(const char *what, void *obj, int *x, int *y, int w, int h
 static int __fastcall spr_draw_5c_hook(void *self, void *edx, void *target, int x, int y, void *clip)
 {
     if (is_screen(target)) place_draw("sprite", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite", self, target, x, y);
     return spr_draw_5c(self, edx, target, x, y, clip);
 }
 
 static int __fastcall spr_draw_44_hook(void *self, void *edx, void *target, int x, int y, void *clip)
 {
     if (is_screen(target)) place_draw("sprite-scaled", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite-scaled", self, target, x, y);
     return spr_draw_44(self, edx, target, x, y, clip);
 }
 
 static int __fastcall spr_draw_54_hook(void *self, void *edx, void *a, void *target, int x, int y, void *clip)
 {
     if (is_screen(target)) place_draw("sprite-54", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite-54", self, target, x, y);
     return spr_draw_54(self, edx, a, target, x, y, clip);
 }
 
 static int __fastcall spr_draw_40_hook(void *self, void *edx, void *target, void *b, int x, int y, void *clip)
 {
     if (is_screen(target)) place_draw("sprite-40", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite-40", self, target, x, y);
     return spr_draw_40(self, edx, target, b, x, y, clip);
 }
 
