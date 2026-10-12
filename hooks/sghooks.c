@@ -251,6 +251,7 @@ static int draw_lines;
  * a call instruction), innermost first. The main routine (0x40f5c0) is the
  * outermost frame that matters, and its big frame holds stale addresses, so
  * the scan stops at the first return address into it. */
+#define MAX_CALLERS 16   /* window-system callbacks (e.g. list boxes) sit deep */
 #define MAIN_START 0x40f5c0
 #define MAIN_END   0x421b60
 static int golf_callers(DWORD *out, int max)
@@ -351,11 +352,11 @@ static const struct hud_rule *place_draw(const char *what, void *obj, int *x, in
 {
     static DWORD seen[4096];
     static int nseen;
-    DWORD callers[8] = {0}, key;
+    DWORD callers[MAX_CALLERS] = {0}, key;
     const struct hud_rule *rule;
     int n, i, dx = 0, dy = 0;
 
-    n = golf_callers(callers, 8);
+    n = golf_callers(callers, MAX_CALLERS);
     rule = find_rule(callers, n, *x, *y);
     /* full-screen copies (backdrops) never move */
     if (rule && !(w == (int)screen_w && h == (int)screen_h)) anchor_offset(rule->anchor, &dx, &dy);
@@ -368,8 +369,10 @@ static const struct hud_rule *place_draw(const char *what, void *obj, int *x, in
         {
             if (nseen < 4096) seen[nseen++] = key;
             draw_lines++;
-            log_msg("draw %s obj %p at %d,%d size %dx%d callers %08lx %08lx %08lx %08lx %08lx %08lx%s%s%s%s",
-                    what, obj, *x, *y, w, h, callers[0], callers[1], callers[2], callers[3], callers[4], callers[5],
+            char list[MAX_CALLERS * 9 + 1] = "";
+            for (i = 0; i < n; i++) sprintf(list + i * 9, " %08lx", callers[i]);
+            log_msg("draw %s obj %p at %d,%d size %dx%d callers%s%s%s%s%s",
+                    what, obj, *x, *y, w, h, list,
                     rule ? " moved by " : "", rule ? rule->name : "",
                     text ? " text " : "", text ? text : "");
         }
@@ -645,12 +648,12 @@ static get_mouse_fn get_mouse_orig;
 static void __fastcall get_mouse_hook(void *self, void *edx, int *x, int *y)
 {
     const struct hud_rule *rule;
-    DWORD callers[8];
+    DWORD callers[MAX_CALLERS];
     int n;
 
     get_mouse_orig(self, edx, x, y);
     if (!x || !y) return;
-    n = golf_callers(callers, 8);
+    n = golf_callers(callers, MAX_CALLERS);
     rule = find_rule(callers, n, *x, *y);
     if (rule && rule->anchor == ANCHOR_CENTER)
     {
