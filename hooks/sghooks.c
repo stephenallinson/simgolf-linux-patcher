@@ -174,8 +174,8 @@ static void hook_windows(void)
 enum anchor { ANCHOR_RIGHT, ANCHOR_BOTTOM, ANCHOR_CENTER, ANCHOR_NONE };
 
 /* A HUD part: draws issued from these golf.exe return addresses move together.
- * Some call sites draw several parts (e.g. a loop over panel shadows); those
- * rules also filter on the draw's original 800x600 position. */
+ * A rule can also filter on the draw's original 800x600 position, for call
+ * sites that draw several parts. */
 struct hud_rule
 {
     const char *name;
@@ -205,18 +205,9 @@ static const struct hud_rule hud_rules[] =
     {"report", 0x459850, 0x45a090, ANCHOR_CENTER},
     {"report", 0x45a090, 0x45ae30, ANCHOR_CENTER},
     {"report", 0x46e810, 0x46f1d0, ANCHOR_CENTER},
-    /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and text */
+    /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and
+     * text, and their drop shadows (sprite +0x6c through 0x421b90) */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
-    /* HUD routine: translucent panel shadows, drawn for all panels from one call
-     * site and redrawn from three more */
-    {"stats panel shadow", 0x40f84d, 0x40f84e, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
-    {"stats panel shadow", 0x420f11, 0x420f12, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
-    {"stats panel shadow", 0x42114b, 0x42114c, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
-    {"stats panel shadow", 0x4212d8, 0x4212d9, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
-    /* dark bars behind each stat (626,23 / 669,74 / 706,125), drawn through
-     * 0x470140 from these two call sites; 0x47c31f also redraws other things */
-    {"stats bars", 0x407d4b, 0x407d4c, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
-    {"stats bars", 0x47c31f, 0x47c320, ANCHOR_RIGHT, TRUE, 600, 800, 0, 200},
     /* HUD routine's call to the control wheel (0x432ba0) */
     {"control wheel", 0x4197c9, 0x4197ca, ANCHOR_BOTTOM},
     /* HUD routine's call to 0x4321d0, which also draws the wheel's base */
@@ -229,11 +220,6 @@ static const struct hud_rule hud_rules[] =
     {"tool palette", 0x419816, 0x419817, ANCHOR_BOTTOM},
     {"tool palette", 0x419842, 0x419843, ANCHOR_BOTTOM},
     {"tool palette", 0x4198b3, 0x4198b4, ANCHOR_BOTTOM},
-    /* palette shadows, from the same four shadow call sites as the stats panel */
-    {"tool palette shadow", 0x40f84d, 0x40f84e, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
-    {"tool palette shadow", 0x420f11, 0x420f12, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
-    {"tool palette shadow", 0x42114b, 0x42114c, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
-    {"tool palette shadow", 0x4212d8, 0x4212d9, ANCHOR_BOTTOM, TRUE, 200, 800, 440, 600},
 };
 
 typedef int (__fastcall *getter_fn)(void *self, void *edx);
@@ -395,6 +381,18 @@ static int __fastcall spr_draw_40_hook(void *self, void *edx, void *target, void
     return spr_draw_40(self, edx, target, b, x, y, clip);
 }
 
+/* Sprite +0x6c: drop shadow (target, x, y, ?, clip), through golf.exe's
+ * 0x474030 / 0x4740f0 (the panels' shadows, and golfers'). */
+typedef int (__fastcall *shadow_fn)(void *self, void *edx, void *target, int x, int y, int a, void *clip);
+static shadow_fn spr_shadow_6c;
+
+static int __fastcall spr_shadow_6c_hook(void *self, void *edx, void *target, int x, int y, int a, void *clip)
+{
+    if (is_screen(target)) place_draw("shadow", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("shadow", self, target, x, y);
+    return spr_shadow_6c(self, edx, target, x, y, a, clip);
+}
+
 static int __fastcall surf_blit_40_hook(void *self, void *edx, void *target, RECT *src, RECT *dst)
 {
     RECT moved;
@@ -509,6 +507,7 @@ static void hook_draws(const char *dir)
     spr_draw_44 = swap_ptr(&spr[0x44 / 4], spr_draw_44_hook);
     spr_draw_54 = swap_ptr(&spr[0x54 / 4], spr_draw_54_hook);
     spr_draw_40 = swap_ptr(&spr[0x40 / 4], spr_draw_40_hook);
+    spr_shadow_6c = swap_ptr(&spr[0x6c / 4], spr_shadow_6c_hook);
     spr_blend_94 = swap_ptr(&spr[0x94 / 4], spr_blend_94_hook);
     surf_blit_40 = swap_ptr(&surf[0x40 / 4], surf_blit_40_hook);
     real_TextOutA = hook_import(jgld, "GDI32.dll", "TextOutA", TextOutA_hook);
