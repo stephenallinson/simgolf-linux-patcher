@@ -6,12 +6,16 @@
  * so a different game version is left alone.
  *
  * Environment:
- *   SIMGOLF_RES=WxH   screen size instead of 800x600 (experimental)
- *   SGHOOKS_LOG=path  Windows path for a log file
+ *   SIMGOLF_RES=WxH   screen size instead of 800x600 (experimental); top-level
+ *                     UI windows laid out for 800x600 are moved to the matching
+ *                     screen edge
+ *   SGHOOKS_LOG=path  Windows path for a log file (also lists every UI window
+ *                     the game creates)
  */
 #include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static FILE *log_file;
@@ -51,6 +55,103 @@ static BOOL patch_bytes(const char *what, DWORD addr, const void *orig, const vo
     return TRUE;
 }
 
+/* Hook a function: overwrite its first `len` bytes (whole instructions that
+ * can run anywhere, at least 5) with a jump to `detour`, and return a
+ * trampoline that runs those bytes and continues in the original. */
+static void *install_hook(const char *what, DWORD addr, const void *orig, SIZE_T len, void *detour)
+{
+    BYTE *tramp, jmp[5];
+    DWORD old;
+
+    if (len < 5 || memcmp((void *)addr, orig, len))
+    {
+        log_msg("%s: unexpected bytes at %#lx, not hooked", what, addr);
+        return NULL;
+    }
+    if (!(tramp = VirtualAlloc(NULL, len + 5, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE))) return NULL;
+    memcpy(tramp, orig, len);
+    tramp[len] = 0xe9;
+    *(DWORD *)(tramp + len + 1) = addr + len - ((DWORD)tramp + len + 5);
+
+    jmp[0] = 0xe9;
+    *(DWORD *)(jmp + 1) = (DWORD)detour - (addr + 5);
+    if (!VirtualProtect((void *)addr, len, PAGE_EXECUTE_READWRITE, &old)) return NULL;
+    memcpy((void *)addr, jmp, 5);
+    memset((BYTE *)addr + 5, 0x90, len - 5);
+    VirtualProtect((void *)addr, len, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), (void *)addr, len);
+    log_msg("%s: hooked %#lx", what, addr);
+    return tramp;
+}
+
+static unsigned int screen_w = 800, screen_h = 600;
+
+/* Window setup, 0x47a4c0: int __thiscall(x, y, w, h, title, flags, parent, ?, ?).
+ * Negative x/y already mean "from the right/bottom edge" of the parent, or of
+ * the screen for top-level windows (parent == NULL). Written as __fastcall
+ * with a dummy edx so the stack layout matches __thiscall. */
+typedef int (__fastcall *window_setup_fn)(void *self, void *edx, int x, int y, int w, int h,
+                                         const char *title, unsigned int flags, void *parent,
+                                         void *a9, void *a10);
+static window_setup_fn window_setup_orig;
+
+/* Full-screen top-level windows (the game's main window): their children are
+ * effectively positioned on the screen too. */
+#define MAX_ROOTS 8
+static void *roots[MAX_ROOTS];
+static int nroots;
+
+static BOOL is_root(void *w)
+{
+    int i;
+    for (i = 0; i < nroots; i++) if (roots[i] == w) return TRUE;
+    return FALSE;
+}
+
+/* Move a top-level window laid out for 800x600 to the matching edge of the
+ * real screen: flush right/bottom stays flush, centred stays centred. */
+static void anchor_window(int *x, int *y, int w, int h)
+{
+    int dx = screen_w - 800, dy = screen_h - 600;
+
+    if (w < 800 && *x >= 0)
+    {
+        if (abs(*x + w / 2 - 400) <= 8) *x += dx / 2;
+        else if (*x + w >= 800 - 24 && *x + w / 2 > 400) *x += dx;
+    }
+    if (h < 600 && *y >= 0)
+    {
+        if (abs(*y + h / 2 - 300) <= 8) *y += dy / 2;
+        else if (*y + h >= 600 - 24 && *y + h / 2 > 300) *y += dy;
+    }
+}
+
+static int __fastcall window_setup_hook(void *self, void *edx, int x, int y, int w, int h,
+                                        const char *title, unsigned int flags, void *parent,
+                                        void *a9, void *a10)
+{
+    int nx = x, ny = y;
+    char name[48] = "";
+
+    if (title && !IsBadStringPtrA(title, sizeof(name) - 1))
+        lstrcpynA(name, title, sizeof(name));
+    if (!parent && w == (int)screen_w && h == (int)screen_h && nroots < MAX_ROOTS && !is_root(self))
+        roots[nroots++] = self;
+    if ((!parent || is_root(parent)) && (screen_w != 800 || screen_h != 600))
+        anchor_window(&nx, &ny, w, h);
+    log_msg("window %p: %d,%d %dx%d -> %d,%d flags %#x parent %p caller %p \"%s\"",
+            self, x, y, w, h, nx, ny, flags, parent, __builtin_return_address(0), name);
+    return window_setup_orig(self, edx, nx, ny, w, h, title, flags, parent, a9, a10);
+}
+
+static void hook_windows(void)
+{
+    static const BYTE prologue[] = {0x64, 0xa1, 0x00, 0x00, 0x00, 0x00};  /* mov eax, fs:[0] */
+
+    window_setup_orig = install_hook("window setup", 0x47a4c0, prologue, sizeof(prologue),
+                                     window_setup_hook);
+}
+
 /* The game's main routine (0x45baf0) starts with
  *   mov dword [0x822c8c], 800   ; c7 05 8c 2c 82 00 20 03 00 00
  *   mov dword [0x822c90], 600   ; c7 05 90 2c 82 00 58 02 00 00
@@ -73,8 +174,12 @@ static void patch_resolution(void)
     memcpy(new_h, orig_h, sizeof(new_h));
     memcpy(new_w + 6, &w, 4);
     memcpy(new_h + 6, &h, 4);
-    patch_bytes("screen width", 0x45baf6, orig_w, new_w, sizeof(orig_w));
-    patch_bytes("screen height", 0x45bb00, orig_h, new_h, sizeof(orig_h));
+    if (patch_bytes("screen width", 0x45baf6, orig_w, new_w, sizeof(orig_w)) &&
+        patch_bytes("screen height", 0x45bb00, orig_h, new_h, sizeof(orig_h)))
+    {
+        screen_w = w;
+        screen_h = h;
+    }
     log_msg("requested resolution %ux%u", w, h);
 }
 
@@ -93,5 +198,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
     name = strrchr(exe, '\\');
     if (_stricmp(name ? name + 1 : exe, "golf.exe")) return TRUE;
     patch_resolution();
+    if (log_file || screen_w != 800 || screen_h != 600) hook_windows();
     return TRUE;
 }
