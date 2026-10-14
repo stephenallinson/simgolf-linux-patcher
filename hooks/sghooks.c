@@ -775,6 +775,36 @@ static void patch_file_lists(void)
     }
 }
 
+/* The palette boundary (0x41e459: cmp ecx, 0x1e0; jle not-palette) sends
+ * every click below y 480 to the palette, which spans that whole strip on an
+ * 800-wide screen only. Replace the cmp with a call to a stub that also sends
+ * clicks at x >= 800 (eax holds the click x here, from 0x41e412) to the
+ * course: it sets the flags as cmp would, or forces "less or equal". */
+static void patch_palette_boundary(int dy)
+{
+    static const BYTE cmp_y[] = {0x81, 0xf9, 0xe0, 0x01, 0x00, 0x00};
+    BYTE *stub, call_ins[6];
+    DWORD limit = 0x1e0 + dy, rel;
+    int n = 0;
+
+    if (!(stub = VirtualAlloc(NULL, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)))
+    {
+        log_msg("palette boundary: VirtualAlloc failed");
+        return;
+    }
+    stub[n++] = 0x3d; memcpy(stub + n, (DWORD[]){800}, 4); n += 4;      /* cmp eax, 800 */
+    stub[n++] = 0x7d; stub[n++] = 7;                                   /* jge force */
+    stub[n++] = 0x81; stub[n++] = 0xf9; memcpy(stub + n, &limit, 4); n += 4;  /* cmp ecx, limit */
+    stub[n++] = 0xc3;                                                  /* ret */
+    stub[n++] = 0x39; stub[n++] = 0xc9;                                /* force: cmp ecx, ecx */
+    stub[n++] = 0xc3;                                                  /* ret */
+    rel = (DWORD)stub - (0x41e459 + 5);
+    call_ins[0] = 0xe8;
+    memcpy(call_ins + 1, &rel, 4);
+    call_ins[5] = 0x90;
+    patch_bytes("bottom HUD click boundary (palette)", 0x41e459, cmp_y, call_ins, sizeof(cmp_y));
+}
+
 static void hook_hud_input(void)
 {
     static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
@@ -806,7 +836,7 @@ static void hook_hud_input(void)
         get_mouse_orig = install_hook("mouse position", 0x47ab50, mouse_prologue, sizeof(mouse_prologue), get_mouse_hook);
     }
     move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
-    move_boundary("bottom HUD click boundary (palette)", 0x41e459, cmp_ecx, 0x1e0, dy);
+    patch_palette_boundary(dy);
     patch_file_lists();
 }
 
