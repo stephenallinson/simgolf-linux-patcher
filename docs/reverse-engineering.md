@@ -117,11 +117,17 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
   - in Terrain.dll, the size compares follow the real size, and the view extent in `initSystem` and `setZoomLevel` is scaled by screen/tier.
 - **At 1280x720 this matches native 1024x768**, checked by screenshot comparison after loading and after zooming.
 
+**Fixed since:**
+- **Pan drift:** the original 1024x768 tier's `initSystem` height extent (1303) didn't match the screen shape. It now uses 1357.65 (commit 673e3da), and the fix applies at native 1024x768 too.
+- **Palette flag:** drawn through sprite `+0x78`, which is now hooked, along with `+0x4c` and `+0x50`.
+- **Golfer list:** clipped at x 790 in its own coordinates.
+- **Golfer close-up inset:** its limits now follow the screen size.
+- **Release:** `make-release.sh` ships sghooks, `patch-terrain.sh` installs it, and the README documents `SIMGOLF_RES`.
+- **Checked at 1280x720:** report darkening, centred reports and the Information menu.
+
 **Open:**
-1. **The ground drifts vertically from objects after panning** (9–19 px, varying by region, horizontal 0). A redraw fixes it (zoom out, then in). **It also happens at native 1024x768**, so it isn't caused by widescreen. Next step: run the same pan-then-redraw test at 800x600. If 800x600 drifts too, it's the terrgl32 shim (strip render after scroll). If not, it's the original game's 1024 tier, where the projection's y-scale is 1.3 and x-scale 1.25, and the scroll copies the screen by tile-size steps. That test was interrupted before it ran.
-2. **The golfer list** (palette mode 3/4) adds columns to fill the screen width and runs past its 800-wide panel.
-3. **A flag sprite drawn at a fixed screen position** (~363,490) at 1024+, at every zoom level. Its source is unknown, and it may also exist at 800x600.
-4. Not yet checked at widescreen: the darkening behind reports, the bottom message ticker, and golfer speech-bubble clamps (0x416919: x 50–720, y 50–520 in 800x600 terms).
-5. `make-release.sh` doesn't ship sghooks yet, and the README doesn't document `SIMGOLF_RES`.
+1. The golfer close-up inset at widescreen isn't verified on screen yet. It needs a moment in a golfer's shot.
+2. Palette clicks at x ≥ 790 (where the golfer list used to overflow) still reach the hidden groups.
+3. The release version is still 0.1.0, set by `TERRGL32_VERSION`. Bump it before publishing.
 
 **Testing without the monitor:** `tools/xdrive/load-save.sh WxH :77` runs the game on a private Xvfb display, skips the intro and loads the 8th save. Then use `DISPLAY=:77 tools/xdrive/xdrive click X Y` / `key Escape` and `DISPLAY=:77 import -window root shot.png`. Wheel buttons at 1280x720: + (32,662), − (32,708). At 1024x768 they're 48 px lower. Only one game can run per Wine prefix. Stop it with `WINEPREFIX=~/.wine-simgolf wineserver -k; pkill -f '^Xvfb :7'`. Don't use `pkill -f golf.exe`: it matches the shell running it.

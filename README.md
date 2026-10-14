@@ -2,7 +2,7 @@
 
 A fix that makes **Sid Meier's SimGolf** (2002, Firaxis/EA) playable under Wine on Linux. Without it, the course terrain renders as garbage, as black areas, or not at all. The course is built from tiles drawn with OpenGL, and those draws break under Wine.
 
-This project contains **no game files**. You need your own installed copy of SimGolf, patched to 1.03. The fix changes two bytes in your own `Terrain.dll` and adds a small DLL of its own (`terrgl32.dll`).
+This project contains **no game files**. You need your own installed copy of SimGolf, patched to 1.03. The fix changes two bytes in your own `Terrain.dll` and adds two small DLLs of its own: `terrgl32.dll`, and `sghooks.dll` for optional higher resolutions.
 
 Tested on Wine 11.19 (Arch), Mesa 26.2 / RADV, AMD Radeon RX 9070 XT.
 
@@ -32,6 +32,23 @@ Tested on Wine 11.19 (Arch), Mesa 26.2 / RADV, AMD Radeon RX 9070 XT.
    This runs the game at its native 800x600 inside [gamescope](https://github.com/ValveSoftware/gamescope), enlarged by the largest whole-number factor that fits your screen, so pixels stay crisp and square (for example 2x on a 1440p monitor). For other scaling, set gamescope options in `GAMESCOPE_ARGS`: `GAMESCOPE_ARGS="-F pixel" ./run.sh` or `"-F fsr"` fill the screen height. Without gamescope, `run.sh` uses a plain Wine virtual desktop; `./run.sh --no-gamescope` forces that.
 
 To undo everything: `./patch-terrain.sh --revert`.
+
+## Higher resolutions (experimental)
+
+`patch-terrain.sh` also installs `sghooks.dll`. It changes the game in memory at start-up and leaves its files on disk alone. With `SIMGOLF_RES` set, the game runs at that size:
+
+```sh
+SIMGOLF_RES=1280x720 ./run.sh    # widescreen; 2x on a 2560x1440 monitor
+SIMGOLF_RES=1024x768 ./run.sh
+```
+
+- **Course:** uses the whole screen.
+- **Panels:** the stats panel, control wheel, tool palette and mood bar stay at the screen edges.
+- **Centred screens:** reports, menus, the title screen, the world map and the load/save screens are drawn centred, at their original 800x600 size.
+- **Course detail:** the game has course art for 800x600, 1024x768 and 1280x1024. Other sizes use the nearest by screen height: under 700 rows the 800x600 art, 700–899 the 1024x768 art, 900 and up the 1280x1024 art.
+
+Without `SIMGOLF_RES`, the game runs at its normal 800x600.
+
 
 ## Troubleshooting
 

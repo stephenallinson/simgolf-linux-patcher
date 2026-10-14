@@ -1,6 +1,6 @@
 #!/bin/sh
 # Patch your own copy of SimGolf's Terrain.dll to use the terrgl32 OpenGL shim,
-# and install terrgl32.dll next to it. Run with --revert to undo.
+# and install terrgl32.dll (and sghooks.dll, if built) next to it. Run with --revert to undo.
 #
 # Usage: ./patch-terrain.sh [--revert] [game folder]
 # The game folder defaults to the standard install location in $WINEPREFIX
@@ -35,8 +35,8 @@ backup="$terrain.orig"
 if [ $revert = 1 ]; then
     [ -f "$backup" ] || die "no backup at $backup, nothing to revert"
     cp -p "$backup" "$terrain"
-    rm -f "$game/terrgl32.dll" "$game/TERRGL32.dll"
-    echo "Reverted $terrain from backup and removed terrgl32.dll."
+    rm -f "$game/terrgl32.dll" "$game/TERRGL32.dll" "$game/sghooks.dll"
+    echo "Reverted $terrain from backup and removed terrgl32.dll and sghooks.dll."
     exit 0
 fi
 
@@ -68,3 +68,11 @@ fi
 
 cp "$shim" "$game/terrgl32.dll"
 echo "Installed terrgl32.dll into $game."
+
+# Optional: the resolution hooks (used only when SIMGOLF_RES is set).
+hooks="$here/sghooks.dll"
+[ -f "$hooks" ] || hooks="$here/hooks/sghooks.dll"
+if [ -f "$hooks" ]; then
+    cp "$hooks" "$game/sghooks.dll"
+    echo "Installed sghooks.dll (higher resolutions: SIMGOLF_RES=1280x720 ./run.sh)."
+fi

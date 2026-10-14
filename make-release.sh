@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build terrgl32.dll and package a release: dist/simgolf-linux-<version>.tar.gz and .zip.
+# Build terrgl32.dll and sghooks.dll and package a release: dist/simgolf-linux-<version>.tar.gz and .zip.
 # Contains only this project's files; no game files.
 #
 # Usage: ./make-release.sh [--test]
@@ -12,17 +12,19 @@ version=$(sed -n 's/^#define TERRGL32_VERSION "\(.*\)"/\1/p' shim/terrgl32.c)
 name=simgolf-linux-$version
 
 shim/build.sh
+hooks/build.sh
 if [ "$1" = "--test" ]; then
     i686-w64-mingw32-gcc -O1 -Wall -o shim/test/shimtest.exe shim/test/shimtest.c -lopengl32 -lgdi32
     WINEDEBUG=-all wine shim/test/shimtest.exe "$(winepath -w shim/terrgl32.dll)"
 fi
 
 rm -rf "dist/$name"
-mkdir -p "dist/$name/shim/test" "dist/$name/tools"
+mkdir -p "dist/$name/shim/test" "dist/$name/hooks" "dist/$name/tools"
 cp README.md LICENSE patch-terrain.sh run.sh "dist/$name/"
-cp shim/terrgl32.dll "dist/$name/"
+cp shim/terrgl32.dll hooks/sghooks.dll "dist/$name/"
 cp shim/terrgl32.c shim/terrgl32.def shim/build.sh "dist/$name/shim/"
 cp shim/test/shimtest.c "dist/$name/shim/test/"
+cp hooks/sghooks.c hooks/build.sh "dist/$name/hooks/"
 cp tools/trace-run.sh "dist/$name/tools/"
 
 cd dist
