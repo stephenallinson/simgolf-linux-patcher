@@ -41,8 +41,14 @@ if [ -f "$dir/top10.sve" ]; then cp -a "$dir/top10.sve" "$backup/top10.sve" || e
 touch "$backup/complete"
 Xvfb "$disp" -screen 0 "${w}x${h}x24" -nolisten tcp >/dev/null 2>&1 &
 sleep 2
-(cd "$dir" && env -u WAYLAND_DISPLAY DISPLAY="$disp" SIMGOLF_RES="$res" setsid wine golf.exe >/dev/null 2>&1 &)
-sleep 20
+for try in 1 2; do
+    (cd "$dir" && env -u WAYLAND_DISPLAY DISPLAY="$disp" SIMGOLF_RES="$res" setsid wine golf.exe >/dev/null 2>&1 &)
+    sleep 20
+    pgrep -f '^[A-Za-z]:.*golf\.exe' >/dev/null && break
+    echo "golf.exe didn't start, retrying" >&2
+    wineserver -k 2>/dev/null
+    sleep 2
+done
 export DISPLAY="$disp"
 # the menus are 800x600, centred
 ox=$(( (w - 800) / 2 ))

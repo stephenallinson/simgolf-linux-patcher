@@ -255,6 +255,25 @@ static rect3_fn surf_blit_40;
 static textout_fn real_TextOutA;
 static BOOL draw_log;
 static int draw_lines;
+#define DRAW_LOG_MAX 300000
+
+/* Draw-log deduplication: a set of line keys (open addressing). Returns TRUE
+ * the first time a key is seen; once the set is full, nothing more is new. */
+#define SEEN_SIZE 65536
+static BOOL first_seen(DWORD key)
+{
+    static DWORD seen[SEEN_SIZE];
+    static int count;
+    DWORD i;
+
+    if (!key) key = 1;   /* 0 marks an empty slot */
+    for (i = (key * 2654435761u) & (SEEN_SIZE - 1); seen[i]; i = (i + 1) & (SEEN_SIZE - 1))
+        if (seen[i] == key) return FALSE;
+    if (count >= SEEN_SIZE * 3 / 4) return FALSE;
+    seen[i] = key;
+    count++;
+    return TRUE;
+}
 
 /* Return addresses into golf.exe's .text found on the stack (each must follow
  * a call instruction), innermost first. The main routine (0x40f5c0) is the
@@ -313,18 +332,14 @@ static void surface_size(void *target, int *w, int *h)
 /* With the draw log on, also log draws into off-screen surfaces (never moved). */
 static void log_offscreen(const char *what, void *obj, void *target, int x, int y)
 {
-    static DWORD seen[4096];
-    static int nseen;
     DWORD callers[4] = {0}, key;
-    int i, w, h;
+    int w, h;
 
-    if (!draw_log || draw_lines >= 20000) return;
+    if (!draw_log || draw_lines >= DRAW_LOG_MAX) return;
     surface_size(target, &w, &h);
     golf_callers(callers, 4);
     key = (DWORD)what * 31 + callers[0] * 7 + callers[1] * 3 + callers[2] + x * 131071 + y * 8191 + w;
-    for (i = 0; i < nseen && seen[i] != key; i++);
-    if (i < nseen) return;
-    if (nseen < 4096) seen[nseen++] = key;
+    if (!first_seen(key)) return;
     draw_lines++;
     log_msg("offscreen %s obj %p at %d,%d into %p %dx%d callers %08lx %08lx %08lx %08lx",
             what, obj, x, y, target, w, h, callers[0], callers[1], callers[2], callers[3]);
@@ -363,8 +378,6 @@ static BOOL draw_clipped;
 
 static const struct hud_rule *place_draw(const char *what, void *obj, int *x, int *y, int w, int h, const char *text)
 {
-    static DWORD seen[4096];
-    static int nseen;
     DWORD callers[MAX_CALLERS] = {0}, key;
     const struct hud_rule *rule;
     int n, i, dx = 0, dy = 0;
@@ -375,13 +388,11 @@ static const struct hud_rule *place_draw(const char *what, void *obj, int *x, in
     /* full-screen copies (backdrops) never move */
     if (rule && !(w == (int)screen_w && h == (int)screen_h)) anchor_offset(rule->anchor, &dx, &dy);
 
-    if (draw_log && draw_lines < 20000)
+    if (draw_log && draw_lines < DRAW_LOG_MAX)
     {
         key = (DWORD)what * 31 + callers[0] * 7 + callers[1] * 3 + callers[2] + *x * 131071 + *y * 8191;
-        for (i = 0; i < nseen && seen[i] != key; i++);
-        if (i == nseen)
+        if (first_seen(key))
         {
-            if (nseen < 4096) seen[nseen++] = key;
             draw_lines++;
             char list[MAX_CALLERS * 9 + 1] = "";
             for (i = 0; i < n; i++) sprintf(list + i * 9, " %08lx", callers[i]);
@@ -907,6 +918,23 @@ static void patch_closeup_bounds(void)
     patch_imm32("close-up y clamp (2)", 0x41697d, 1, 520, screen_h - 80);
 }
 
+/* The tool palette's object previews (benches, bridges, ...) are queued and
+ * drawn through 0x4628d0 from 0x432480, sized by the tier (above), so on a
+ * bigger tier they overlap in the palette. Run that call with the 800x600
+ * tier, as the palette was laid out for. */
+/* the course tier (see patch_course_tier) */
+static DWORD tier_w = 800, tier_h = 600;
+
+typedef void (__cdecl *queue_object_fn)(int, int, int, int, int, int, int, int);
+static void __cdecl palette_preview(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8)
+{
+    DWORD saved = tier_w;
+
+    tier_w = 800;
+    ((queue_object_fn)0x4628d0)(a1, a2, a3, a4, a5, a6, a7, a8);
+    tier_w = saved;
+}
+
 static void patch_vertical_scale(void)
 {
     redirect_call("main window height", 0x45bbd4, SCALE_FN, scale_y);
@@ -925,7 +953,8 @@ static void patch_vertical_scale(void)
  *             so the compares change, not the load)
  * Both follow a tier picked from the screen height instead, so they agree and
  * wide screens get a supported one. */
-static DWORD tier_w = 800, tier_h = 600;
+
+static const BYTE tile_w_load_orig[] = {0xa1, 0x8c, 0x2c, 0x82, 0x00};   /* mov eax, [0x822c8c] */
 
 static void patch_course_tier(void)
 {
@@ -939,6 +968,19 @@ static void patch_course_tier(void)
     if (screen_h >= 900) { tier_w = 1280; tier_h = 1024; }
     else if (screen_h >= 700) { tier_w = 1024; tier_h = 768; }
     log_msg("course tier %lux%lu", tier_w, tier_h);
+    {
+        /* object sizes: 0x4628d0, 0x462a43, 0x462c09 load the screen width
+         * and pick a divisor (16, 13 above 1000, 10 from 1200); eax is
+         * overwritten right after, so the load can read the tier instead */
+        static const DWORD obj_sites[] = {0x4628d0, 0x462a43, 0x462c09};
+        BYTE new_ld[5] = {0xa1};
+        int k;
+
+        memcpy(new_ld + 1, &pw, 4);
+        for (k = 0; k < 3; k++)
+            patch_bytes("course object size (width)", obj_sites[k], tile_w_load_orig, new_ld, 5);
+    }
+    redirect_call("palette object previews", 0x432480, 0x4628d0, palette_preview);
     memcpy(new_tile, tile_w, 1);
     memcpy(new_tile + 1, &pw, 4);
     patch_bytes("course tile sizes (width)", 0x44a6e0, tile_w, new_tile, sizeof(tile_w));
