@@ -24,17 +24,20 @@
 #include <string.h>
 
 static FILE *log_file;
+static CRITICAL_SECTION log_lock;
 
 static void log_msg(const char *fmt, ...)
 {
     va_list args;
 
     if (!log_file) return;
+    EnterCriticalSection(&log_lock);
     va_start(args, fmt);
     vfprintf(log_file, fmt, args);
     va_end(args);
     fputc('\n', log_file);
     fflush(log_file);
+    LeaveCriticalSection(&log_lock);
 }
 
 /* Replace len bytes at addr with repl if they currently equal orig. */
@@ -598,8 +601,19 @@ static void *hook_import(HMODULE mod, const char *dll, const char *func, void *h
     {
         IMAGE_THUNK_DATA *names, *iat;
         if (_stricmp((char *)mod + imp->Name, dll)) continue;
-        names = (IMAGE_THUNK_DATA *)((BYTE *)mod + (imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk));
         iat = (IMAGE_THUNK_DATA *)((BYTE *)mod + imp->FirstThunk);
+        if (!imp->OriginalFirstThunk)
+        {
+            /* no name table (golf.exe): the slots hold bound addresses, so
+             * find the one holding the function's address */
+            HMODULE target = GetModuleHandleA(dll);
+            DWORD addr = target ? (DWORD)GetProcAddress(target, func) : 0;
+            if (!addr) return NULL;
+            for (; iat->u1.Function; iat++)
+                if (iat->u1.Function == addr) return swap_ptr((void **)&iat->u1.Function, hook);
+            return NULL;
+        }
+        names = (IMAGE_THUNK_DATA *)((BYTE *)mod + imp->OriginalFirstThunk);
         for (; names->u1.AddressOfData; names++, iat++)
         {
             IMAGE_IMPORT_BY_NAME *ibn;
@@ -1206,6 +1220,252 @@ static void patch_resolution(void)
     log_msg("requested resolution %ux%u", w, h);
 }
 
+/* ---- sound.dll stream monitor (SGHOOKS_SNDLOG=1, debugging) ----
+ * sound.dll's mixer (timer thread) asks for a streamed sound's ring buffer to
+ * be refilled by setting flag 0x400 in the stream (+0x58) and posting message
+ * 0x7eb (wParam = stream) to its sound thread, whose handler (0x100288a0,
+ * reached through the thunk at 0x10001780) refills and clears the flag. A
+ * request that never completes leaves the stream replaying its ring forever.
+ * Log the requests and handling, and report streams stuck with 0x400 set. */
+#define SND_SIZE         0xbe000
+#define SND_PREF_BASE    0x10000000
+#define SND_HANDLER_THUNK 0x10001780
+#define SND_HANDLER      0x100288a0
+#define SND_FLAGS        0x58
+#define SND_PENDING      0x1370
+#define SND_MAX_STREAMS  64
+
+static BYTE *snd_base;
+static struct { BYTE *stream; DWORD posted, handled; BOOL stuck; } snd_streams[SND_MAX_STREAMS];
+static CRITICAL_SECTION snd_lock;
+typedef LRESULT (__cdecl *snd_handler_fn)(HWND, UINT, void *, int *);
+static snd_handler_fn snd_handler;
+typedef BOOL (WINAPI *post_thread_fn)(DWORD, UINT, WPARAM, LPARAM);
+typedef BOOL (WINAPI *post_msg_fn)(HWND, UINT, WPARAM, LPARAM);
+static post_thread_fn real_PostThreadMessageA;
+static post_msg_fn real_PostMessageA;
+
+static int snd_slot(BYTE *stream)
+{
+    int i, free_slot = -1;
+
+    for (i = 0; i < SND_MAX_STREAMS; i++)
+    {
+        if (snd_streams[i].stream == stream) return i;
+        if (!snd_streams[i].stream && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) snd_streams[free_slot].stream = stream;
+    return free_slot;
+}
+
+static void snd_note(const char *what, BYTE *stream)
+{
+    DWORD now = GetTickCount();
+    int i;
+
+    EnterCriticalSection(&snd_lock);
+    if ((i = snd_slot(stream)) >= 0)
+    {
+        if (what[0] == 'p') snd_streams[i].posted = now;
+        else snd_streams[i].handled = now;
+        if (snd_streams[i].stuck && what[0] == 'h') snd_streams[i].stuck = FALSE;
+    }
+    LeaveCriticalSection(&snd_lock);
+    log_msg("%lu snd %s stream %p flags %#lx pending %ld thread %lu", now, what, stream,
+            *(DWORD *)(stream + SND_FLAGS), *(LONG *)(stream + SND_PENDING), GetCurrentThreadId());
+}
+
+static BOOL WINAPI snd_PostThreadMessageA(DWORD thread, UINT msg, WPARAM wp, LPARAM lp)
+{
+    BOOL ret = real_PostThreadMessageA(thread, msg, wp, lp);
+    if (msg == 0x7eb && wp) snd_note(ret ? "post" : "post FAILED", (BYTE *)wp);
+    else if (msg >= 0x7e8 && msg <= 0x7f0) log_msg("%lu snd thread msg %#x wp %#lx lp %#lx -> %d", GetTickCount(), msg, (DWORD)wp, (DWORD)lp, ret);
+    return ret;
+}
+
+static BOOL WINAPI snd_PostMessageA(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    BOOL ret = real_PostMessageA(hwnd, msg, wp, lp);
+    if (msg == 0x7eb && wp) snd_note(ret ? "post(wnd)" : "post(wnd) FAILED", (BYTE *)wp);
+    else if (msg >= 0x7e8 && msg <= 0x7f0) log_msg("%lu snd window msg %#x wp %#lx lp %#lx -> %d", GetTickCount(), msg, (DWORD)wp, (DWORD)lp, ret);
+    return ret;
+}
+
+static LRESULT __cdecl snd_handler_hook(HWND hwnd, UINT msg, void *wp, int *lp)
+{
+    LRESULT ret;
+
+    if (msg == 0x7eb && wp) snd_note("handle", wp);
+    ret = snd_handler(hwnd, msg, wp, lp);
+    if (msg == 0x7eb && wp) snd_note("handled", wp);
+    return ret;
+}
+
+static DWORD WINAPI snd_monitor(void *arg)
+{
+    HMODULE snd = NULL;
+    int i;
+
+    for (;;)
+    {
+        Sleep(100);
+        if (!snd)
+        {
+            IMAGE_NT_HEADERS *nt;
+            BYTE *thunk;
+            DWORD rel, old;
+
+            if (!(snd = GetModuleHandleA("sound.dll"))) continue;
+            nt = (IMAGE_NT_HEADERS *)((BYTE *)snd + ((IMAGE_DOS_HEADER *)snd)->e_lfanew);
+            if (nt->OptionalHeader.SizeOfImage != SND_SIZE)
+            {
+                log_msg("snd monitor: unexpected sound.dll (size %#lx)", nt->OptionalHeader.SizeOfImage);
+                return 0;
+            }
+            snd_base = (BYTE *)snd;
+            real_PostThreadMessageA = hook_import(snd, "USER32.dll", "PostThreadMessageA", snd_PostThreadMessageA);
+            real_PostMessageA = hook_import(snd, "USER32.dll", "PostMessageA", snd_PostMessageA);
+            thunk = snd_base + (SND_HANDLER_THUNK - SND_PREF_BASE);
+            snd_handler = (snd_handler_fn)(snd_base + (SND_HANDLER - SND_PREF_BASE));
+            /* the thread-message path (unused by golf.exe, which uses the
+             * window path, logged by the fix's wrapper) */
+            if (thunk[0] == 0xe9 && thunk + 5 + *(LONG *)(thunk + 1) == (BYTE *)snd_handler &&
+                VirtualProtect(thunk, 5, PAGE_EXECUTE_READWRITE, &old))
+            {
+                rel = (DWORD)snd_handler_hook - (DWORD)(thunk + 5);
+                memcpy(thunk + 1, &rel, 4);
+                VirtualProtect(thunk, 5, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), thunk, 5);
+            }
+            else snd_handler = NULL;
+            log_msg("snd monitor: sound.dll at %p, PostThreadMessageA %s, PostMessageA %s, handler %s", snd_base,
+                    real_PostThreadMessageA ? "hooked" : "not hooked", real_PostMessageA ? "hooked" : "not hooked",
+                    snd_handler ? "hooked" : "not hooked");
+            continue;
+        }
+        EnterCriticalSection(&snd_lock);
+        for (i = 0; i < SND_MAX_STREAMS; i++)
+        {
+            BYTE *st = snd_streams[i].stream;
+            DWORD now = GetTickCount(), flags;
+
+            if (!st || snd_streams[i].stuck || IsBadReadPtr(st + SND_FLAGS, 4)) continue;
+            flags = *(DWORD *)(st + SND_FLAGS);
+            if ((flags & 0x400) && now - snd_streams[i].posted > 1000)
+            {
+                snd_streams[i].stuck = TRUE;
+                log_msg("%lu snd STUCK stream %p flags %#lx pending %ld posted %lu ms ago, last handled %lu ms ago",
+                        now, st, flags, *(LONG *)(st + SND_PENDING), now - snd_streams[i].posted,
+                        snd_streams[i].handled ? now - snd_streams[i].handled : 0);
+            }
+        }
+        LeaveCriticalSection(&snd_lock);
+    }
+    return 0;
+}
+
+/* ---- sound.dll fix: streamed sounds looping forever ----
+ * A streamed sound's ring buffer is refilled by sound.dll's window procedure
+ * (0x10028b70, reached through the thunk at 0x100025ef and set as the window
+ * class procedure) on the game's main thread, when the mixer posts it message
+ * 0x7eb. The mixer runs on a timer thread holding the critical section at
+ * 0x100b4990; the handler takes no lock, yet both read-modify-write the
+ * stream's flags word (+0x58). When an update is lost, e.g. the handler's
+ * clearing of the "refill pending" bit 0x400, no refill is ever requested
+ * again, the "finished" bit is never set, and the reader cycles the ring's
+ * last contents forever. Run the handler for 0x7eb under the mixer's lock. */
+#define SND_WNDPROC_THUNK 0x100025ef
+#define SND_WNDPROC       0x10028b70
+#define SND_MIXER_LOCK    0x100b4990
+typedef LRESULT (WINAPI *snd_wndproc_fn)(HWND, UINT, WPARAM, LPARAM);   /* a window procedure: stdcall */
+static snd_wndproc_fn snd_wndproc;
+static CRITICAL_SECTION *snd_mixer_lock;
+static BOOL snd_fixed;
+
+static void snd_note(const char *what, BYTE *stream);
+static BOOL snd_log;
+
+static LRESULT WINAPI snd_wndproc_hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    LRESULT ret;
+
+    if (msg != 0x7eb) return snd_wndproc(hwnd, msg, wp, lp);
+    EnterCriticalSection(snd_mixer_lock);
+    if (snd_log && wp) snd_note("handle", (BYTE *)wp);
+    ret = snd_wndproc(hwnd, msg, wp, lp);
+    if (snd_log && wp) snd_note("handled", (BYTE *)wp);
+    LeaveCriticalSection(snd_mixer_lock);
+    return ret;
+}
+
+static void fix_sound_dll(void)
+{
+    HMODULE snd;
+    IMAGE_NT_HEADERS *nt;
+    BYTE *thunk, *target;
+    DWORD rel, old;
+
+    if (snd_fixed || !(snd = GetModuleHandleA("sound.dll"))) return;
+    snd_fixed = TRUE;
+    nt = (IMAGE_NT_HEADERS *)((BYTE *)snd + ((IMAGE_DOS_HEADER *)snd)->e_lfanew);
+    if (nt->OptionalHeader.SizeOfImage != 0xbe000)
+    {
+        log_msg("sound fix: unexpected sound.dll (size %#lx), not patched", nt->OptionalHeader.SizeOfImage);
+        return;
+    }
+    thunk = (BYTE *)snd + (SND_WNDPROC_THUNK - 0x10000000);
+    target = (BYTE *)snd + (SND_WNDPROC - 0x10000000);
+    if (thunk[0] != 0xe9 || thunk + 5 + *(LONG *)(thunk + 1) != target)
+    {
+        log_msg("sound fix: unexpected code at the window procedure thunk, not patched");
+        return;
+    }
+    snd_wndproc = (snd_wndproc_fn)target;
+    snd_mixer_lock = (CRITICAL_SECTION *)((BYTE *)snd + (SND_MIXER_LOCK - 0x10000000));
+    if (!VirtualProtect(thunk, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    rel = (DWORD)snd_wndproc_hook - (DWORD)(thunk + 5);
+    memcpy(thunk + 1, &rel, 4);
+    VirtualProtect(thunk, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), thunk, 5);
+    log_msg("sound fix: stream refills run under the mixer lock (sound.dll at %p)", snd);
+}
+
+typedef HMODULE (WINAPI *load_library_fn)(LPCSTR);
+static load_library_fn real_LoadLibraryA_golf, real_LoadLibraryA_jgld;
+
+static HMODULE WINAPI LoadLibraryA_jgld(LPCSTR name);
+
+static HMODULE WINAPI LoadLibraryA_golf(LPCSTR name)
+{
+    HMODULE ret = real_LoadLibraryA_golf(name), jgld;
+
+    /* jgld.dll may be loaded only now (e.g. at 800x600) */
+    if (!real_LoadLibraryA_jgld && (jgld = GetModuleHandleA("jgld.dll")))
+        real_LoadLibraryA_jgld = hook_import(jgld, "KERNEL32.dll", "LoadLibraryA", LoadLibraryA_jgld);
+    fix_sound_dll();
+    return ret;
+}
+
+static HMODULE WINAPI LoadLibraryA_jgld(LPCSTR name)
+{
+    HMODULE ret = real_LoadLibraryA_jgld(name);
+    fix_sound_dll();
+    return ret;
+}
+
+static void hook_sound_load(void)
+{
+    HMODULE jgld;
+
+    if (GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0)) return;
+    real_LoadLibraryA_golf = hook_import(GetModuleHandleA(NULL), "KERNEL32.DLL", "LoadLibraryA", LoadLibraryA_golf);
+    if ((jgld = GetModuleHandleA("jgld.dll")))
+        real_LoadLibraryA_jgld = hook_import(jgld, "KERNEL32.dll", "LoadLibraryA", LoadLibraryA_jgld);
+    log_msg("sound fix: watching LoadLibraryA (golf.exe %s, jgld.dll %s)",
+            real_LoadLibraryA_golf ? "hooked" : "not hooked", real_LoadLibraryA_jgld ? "hooked" : "not hooked");
+    fix_sound_dll();
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 {
     char path[MAX_PATH];
@@ -1213,6 +1473,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
     DisableThreadLibraryCalls(inst);
+    InitializeCriticalSection(&log_lock);
     if (GetEnvironmentVariableA("SGHOOKS_LOG", path, sizeof(path))) log_file = fopen(path, "w");
 
     /* only patch golf.exe, not e.g. the shim's test programs */
@@ -1231,5 +1492,12 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
         hook_draws(dir);
     }
     if (screen_w != 800 || screen_h != 600) hook_hud_input();
+    hook_sound_load();
+    if (log_file && GetEnvironmentVariableA("SGHOOKS_SNDLOG", path, sizeof(path)))
+    {
+        InitializeCriticalSection(&snd_lock);
+        snd_log = TRUE;
+        CloseHandle(CreateThread(NULL, 0, snd_monitor, NULL, 0, NULL));
+    }
     return TRUE;
 }
