@@ -430,6 +430,37 @@ static int __fastcall spr_shadow_6c_hook(void *self, void *edx, void *target, in
 
 static void fill_black(int x, int y, int w, int h);
 
+/* Sprite +0x78 (target, x, y, ?, clip), ret 0x14, through 0x4741b0; +0x4c
+ * (target, x, y, ?, clip, ?), ret 0x18, through 0x474260; +0x50 (a, b, c, x, y,
+ * clip), ret 0x18, through 0x473fc0, with the target among a / b / c. */
+typedef int (__fastcall *draw78_fn)(void *self, void *edx, void *target, int x, int y, int a, void *clip);
+typedef int (__fastcall *draw4c_fn)(void *self, void *edx, void *target, int x, int y, int a, void *clip, int b);
+typedef int (__fastcall *draw50_fn)(void *self, void *edx, void *a, void *b, void *c, int x, int y, void *clip);
+static draw78_fn spr_draw_78;
+static draw4c_fn spr_draw_4c;
+static draw50_fn spr_draw_50;
+
+static int __fastcall spr_draw_78_hook(void *self, void *edx, void *target, int x, int y, int a, void *clip)
+{
+    if (is_screen(target)) place_draw("sprite-78", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite-78", self, target, x, y);
+    return spr_draw_78(self, edx, target, x, y, a, clip);
+}
+
+static int __fastcall spr_draw_4c_hook(void *self, void *edx, void *target, int x, int y, int a, void *clip, int b)
+{
+    if (is_screen(target)) place_draw("sprite-4c", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite-4c", self, target, x, y);
+    return spr_draw_4c(self, edx, target, x, y, a, clip, b);
+}
+
+static int __fastcall spr_draw_50_hook(void *self, void *edx, void *a, void *b, void *c, int x, int y, void *clip)
+{
+    if (is_screen(a) || is_screen(b) || is_screen(c)) place_draw("sprite-50", self, &x, &y, 0, 0, NULL);
+    else log_offscreen("sprite-50", self, a, x, y);
+    return spr_draw_50(self, edx, a, b, c, x, y, clip);
+}
+
 static int __fastcall surf_blit_40_hook(void *self, void *edx, void *target, RECT *src, RECT *dst)
 {
     const struct hud_rule *rule;
@@ -571,6 +602,9 @@ static void hook_draws(const char *dir)
     spr_draw_54 = swap_ptr(&spr[0x54 / 4], spr_draw_54_hook);
     spr_draw_40 = swap_ptr(&spr[0x40 / 4], spr_draw_40_hook);
     spr_shadow_6c = swap_ptr(&spr[0x6c / 4], spr_shadow_6c_hook);
+    spr_draw_78 = swap_ptr(&spr[0x78 / 4], spr_draw_78_hook);
+    spr_draw_4c = swap_ptr(&spr[0x4c / 4], spr_draw_4c_hook);
+    spr_draw_50 = swap_ptr(&spr[0x50 / 4], spr_draw_50_hook);
     spr_blend_94 = swap_ptr(&spr[0x94 / 4], spr_blend_94_hook);
     surf_blit_40 = swap_ptr(&surf[0x40 / 4], surf_blit_40_hook);
     real_TextOutA = hook_import(jgld, "GDI32.dll", "TextOutA", TextOutA_hook);
