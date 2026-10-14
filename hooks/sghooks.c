@@ -910,29 +910,38 @@ static void patch_terrain_value(HMODULE terrain, const char *what, DWORD va, DWO
     patch_bytes(what, (DWORD)p, old_ins, new_ins, sizeof(old_ins));
 }
 
+/* In the 1024x768 tier, initSystem's extent is 1810 x 1303: not the screen's
+ * shape (setZoomLevel's is 1810.19 x 1357.65, and the other tiers' match
+ * theirs). The ground is drawn about 4% too tall around the screen centre, so
+ * strips drawn at the top and bottom edges while panning land 10-20 px off
+ * and the scroll carries that inwards; a redraw puts them back. Use 1357.65
+ * for that tier, at its native size too. */
+#define TIER1024_HEIGHT_X100 135765
+
 static void patch_terrain_tier(void)
 {
     static const DWORD tw[3] = {800, 1024, 1280}, th[3] = {600, 768, 1024};
+    static const DWORD ext_w[3] = {0x6e7, 0x712, 0x6cc}, ext_h[3] = {0x52d, 0x517, 0x570};
     HMODULE terrain = GetModuleHandleA("Terrain.dll");
+    BOOL native;
+    DWORD new_h;
     int t, i;
 
     t = tier_w == 1280 ? 2 : tier_w == 1024 ? 1 : 0;
-    if (screen_w == tw[t] && screen_h == th[t]) return;
+    native = screen_w == tw[t] && screen_h == th[t];
+    if (native && t != 1) return;
     if (!terrain) { log_msg("Terrain.dll not loaded, its sizes not patched"); return; }
+    new_h = t == 1 ? (DWORD)(((ULONGLONG)TIER1024_HEIGHT_X100 * screen_h + 768 * 50) / (768 * 100))
+                   : (DWORD)(((ULONGLONG)ext_h[t] * screen_h + th[t] / 2) / th[t]);
+    patch_terrain_value(terrain, "Terrain view extent (height)", terrain_extent[t][1], ext_h[t], new_h);
+    if (native) return;
     for (i = 0; i < 4; i++)
     {
         patch_terrain_value(terrain, "Terrain size compare (width)", terrain_cmp_w[t][i], tw[t], screen_w);
         patch_terrain_value(terrain, "Terrain size compare (height)", terrain_cmp_h[t][i], th[t], screen_h);
     }
-    {
-        static const DWORD ext_w[3] = {0x6e7, 0x712, 0x6cc}, ext_h[3] = {0x52d, 0x517, 0x570};
-        DWORD ew = ext_w[t], eh = ext_h[t];
-
-        patch_terrain_value(terrain, "Terrain view extent (width)", terrain_extent[t][0], ew,
-                            (DWORD)(((ULONGLONG)ew * screen_w + tw[t] / 2) / tw[t]));
-        patch_terrain_value(terrain, "Terrain view extent (height)", terrain_extent[t][1], eh,
-                            (DWORD)(((ULONGLONG)eh * screen_h + th[t] / 2) / th[t]));
-    }
+    patch_terrain_value(terrain, "Terrain view extent (width)", terrain_extent[t][0], ext_w[t],
+                        (DWORD)(((ULONGLONG)ext_w[t] * screen_w + tw[t] / 2) / tw[t]));
     {
         union { DWORD d; float f; } w, h;
 
