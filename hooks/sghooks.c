@@ -185,6 +185,7 @@ struct hud_rule
     enum anchor anchor;
     BOOL filter;               /* only draws with x in [x0, x1) and y in [y0, y1) */
     int x0, x1, y0, y1;
+    int clip_x;                /* if set, draws at original x >= clip_x are skipped */
 };
 
 static const struct hud_rule hud_rules[] =
@@ -232,11 +233,14 @@ static const struct hud_rule hud_rules[] =
     /* HUD routine: golfer mood bar along the bottom (faces and numbers) */
     {"mood bar", 0x418d40, 0x418eea, ANCHOR_BOTTOM},
     /* HUD routine's calls to the tool palette, one per palette mode:
-     * 0x433190, 0x434350, 0x435760, 0x4362f0 (modes 3 and 4) */
-    {"tool palette", 0x4197ea, 0x4197eb, ANCHOR_BOTTOM},
-    {"tool palette", 0x419816, 0x419817, ANCHOR_BOTTOM},
-    {"tool palette", 0x419842, 0x419843, ANCHOR_BOTTOM},
-    {"tool palette", 0x4198b3, 0x4198b4, ANCHOR_BOTTOM},
+     * 0x433190, 0x434350, 0x435760, 0x4362f0 (modes 3 and 4). The golfer list
+     * (mode 3/4) draws every group (121 px apart: 673, 794, 915, ...) and
+     * relies on the 800-wide screen to cut off those past its panel; skip
+     * draws from x 790 on (only a 6 px sliver of the 794 group ever showed). */
+    {"tool palette", 0x4197ea, 0x4197eb, ANCHOR_BOTTOM, FALSE, 0, 0, 0, 0, 790},
+    {"tool palette", 0x419816, 0x419817, ANCHOR_BOTTOM, FALSE, 0, 0, 0, 0, 790},
+    {"tool palette", 0x419842, 0x419843, ANCHOR_BOTTOM, FALSE, 0, 0, 0, 0, 790},
+    {"tool palette", 0x4198b3, 0x4198b4, ANCHOR_BOTTOM, FALSE, 0, 0, 0, 0, 790},
 };
 
 typedef int (__fastcall *getter_fn)(void *self, void *edx);
@@ -354,6 +358,9 @@ static const struct hud_rule *find_rule(const DWORD *callers, int n, int x, int 
 
 /* Find the HUD rule for the current draw, add its offset to x/y, and log the
  * draw if asked. Returns the rule. */
+/* Set by place_draw when the draw's rule clips it; the hook then skips it. */
+static BOOL draw_clipped;
+
 static const struct hud_rule *place_draw(const char *what, void *obj, int *x, int *y, int w, int h, const char *text)
 {
     static DWORD seen[4096];
@@ -364,6 +371,7 @@ static const struct hud_rule *place_draw(const char *what, void *obj, int *x, in
 
     n = golf_callers(callers, MAX_CALLERS);
     rule = find_rule(callers, n, *x, *y);
+    draw_clipped = rule && rule->clip_x && *x >= rule->clip_x;
     /* full-screen copies (backdrops) never move */
     if (rule && !(w == (int)screen_w && h == (int)screen_h)) anchor_offset(rule->anchor, &dx, &dy);
 
@@ -392,6 +400,7 @@ static int __fastcall spr_draw_5c_hook(void *self, void *edx, void *target, int 
 {
     if (is_screen(target)) place_draw("sprite", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_5c(self, edx, target, x, y, clip);
 }
 
@@ -399,6 +408,7 @@ static int __fastcall spr_draw_44_hook(void *self, void *edx, void *target, int 
 {
     if (is_screen(target)) place_draw("sprite-scaled", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite-scaled", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_44(self, edx, target, x, y, clip);
 }
 
@@ -406,6 +416,7 @@ static int __fastcall spr_draw_54_hook(void *self, void *edx, void *a, void *tar
 {
     if (is_screen(target)) place_draw("sprite-54", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite-54", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_54(self, edx, a, target, x, y, clip);
 }
 
@@ -413,6 +424,7 @@ static int __fastcall spr_draw_40_hook(void *self, void *edx, void *target, void
 {
     if (is_screen(target)) place_draw("sprite-40", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite-40", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_40(self, edx, target, b, x, y, clip);
 }
 
@@ -425,6 +437,7 @@ static int __fastcall spr_shadow_6c_hook(void *self, void *edx, void *target, in
 {
     if (is_screen(target)) place_draw("shadow", self, &x, &y, 0, 0, NULL);
     else log_offscreen("shadow", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_shadow_6c(self, edx, target, x, y, a, clip);
 }
 
@@ -444,6 +457,7 @@ static int __fastcall spr_draw_78_hook(void *self, void *edx, void *target, int 
 {
     if (is_screen(target)) place_draw("sprite-78", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite-78", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_78(self, edx, target, x, y, a, clip);
 }
 
@@ -451,6 +465,7 @@ static int __fastcall spr_draw_4c_hook(void *self, void *edx, void *target, int 
 {
     if (is_screen(target)) place_draw("sprite-4c", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite-4c", self, target, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_4c(self, edx, target, x, y, a, clip, b);
 }
 
@@ -458,6 +473,7 @@ static int __fastcall spr_draw_50_hook(void *self, void *edx, void *a, void *b, 
 {
     if (is_screen(a) || is_screen(b) || is_screen(c)) place_draw("sprite-50", self, &x, &y, 0, 0, NULL);
     else log_offscreen("sprite-50", self, a, x, y);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return spr_draw_50(self, edx, a, b, c, x, y, clip);
 }
 
@@ -473,6 +489,7 @@ static int __fastcall surf_blit_40_hook(void *self, void *edx, void *target, REC
     w = dst->right - dst->left;
     h = dst->bottom - dst->top;
     rule = place_draw("blit", self, &x, &y, w, h, NULL);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     moved = *dst;
     OffsetRect(&moved, x - dst->left, y - dst->top);
     /* A centred screen's 800x600 backdrop, copied to (0,0) or stretched over
@@ -500,6 +517,7 @@ static BOOL WINAPI TextOutA_hook(HDC dc, int x, int y, LPCSTR str, int len)
 
     if (draw_log && str) lstrcpynA(buf, str, len + 1 < (int)sizeof(buf) ? len + 1 : (int)sizeof(buf));
     place_draw("text", dc, &x, &y, 0, 0, draw_log ? buf : NULL);
+    if (draw_clipped) { draw_clipped = FALSE; return TRUE; }
     return real_TextOutA(dc, x, y, str, len);
 }
 
@@ -512,6 +530,7 @@ static fill_fn fill_orig;
 static int __fastcall fill_hook(void *self, void *edx, int x, int y, int w, int h, unsigned int colour)
 {
     place_draw("fill", self, &x, &y, w, h, NULL);
+    if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return fill_orig(self, edx, x, y, w, h, colour);
 }
 
