@@ -851,6 +851,32 @@ static void redirect_call(const char *what, DWORD site, DWORD from, void *to)
     patch_bytes(what, site, old_ins, new_ins, sizeof(old_ins));
 }
 
+/* Replace the 32-bit immediate at the end of an instruction (opcode bytes
+ * checked as they are, then the old value). */
+static void patch_imm32(const char *what, DWORD addr, int oplen, DWORD from, DWORD to)
+{
+    BYTE old_ins[8], new_ins[8];
+
+    memcpy(old_ins, (void *)addr, oplen);
+    memcpy(new_ins, (void *)addr, oplen);
+    memcpy(old_ins + oplen, &from, 4);
+    memcpy(new_ins + oplen, &to, 4);
+    patch_bytes(what, addr, old_ins, new_ins, oplen + 4);
+}
+
+/* The golfer close-up inset (a 160x140 magnified box beside a golfer,
+ * 0x4168c0) is only shown for golfers inside x 80..720, y 80..520 and kept
+ * inside 40..760 / 40..560: 800x600 bounds. Use the screen's. */
+static void patch_closeup_bounds(void)
+{
+    patch_imm32("close-up x limit", 0x416919, 1, 720, screen_w - 80);   /* cmp eax, imm */
+    patch_imm32("close-up y limit", 0x416924, 2, 520, screen_h - 80);   /* cmp ecx, imm */
+    patch_imm32("close-up x clamp", 0x416943, 1, 760, screen_w - 40);   /* push imm */
+    patch_imm32("close-up y clamp", 0x416953, 1, 560, screen_h - 40);
+    patch_imm32("close-up x clamp (2)", 0x41696d, 1, 720, screen_w - 80);
+    patch_imm32("close-up y clamp (2)", 0x41697d, 1, 520, screen_h - 80);
+}
+
 static void patch_vertical_scale(void)
 {
     redirect_call("main window height", 0x45bbd4, SCALE_FN, scale_y);
@@ -1040,6 +1066,7 @@ static void patch_resolution(void)
         patch_vertical_scale();
         patch_course_tier();
         patch_terrain_tier();
+        patch_closeup_bounds();
     }
     log_msg("requested resolution %ux%u", w, h);
 }
