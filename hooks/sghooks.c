@@ -573,9 +573,11 @@ static int __fastcall spr_blend_94_hook(void *self, void *edx, void *target, int
 
     if (x == 0 && y == 0 && self == *(void **)(DIM_IMAGE + 4) && is_screen(target))
     {
-        if (screen_w > 800) spr_blend_94(self, edx, target, 800, 0, factor, clip, flag);
-        if (screen_h > 600) spr_blend_94(self, edx, target, 0, 600, factor, clip, flag);
-        if (screen_w > 800 && screen_h > 600) spr_blend_94(self, edx, target, 800, 600, factor, clip, flag);
+        int tx, ty;
+
+        for (ty = 0; ty < (int)screen_h; ty += 600)
+            for (tx = 0; tx < (int)screen_w; tx += 800)
+                if (tx || ty) spr_blend_94(self, edx, target, tx, ty, factor, clip, flag);
     }
     return ret;
 }
@@ -1197,9 +1199,9 @@ static void patch_resolution(void)
     unsigned int w, h;
 
     if (!GetEnvironmentVariableA("SIMGOLF_RES", buf, sizeof(buf))) return;
-    if (sscanf(buf, "%ux%u", &w, &h) != 2 || w < 640 || h < 480 || w > 7680 || h > 4320)
+    if (sscanf(buf, "%ux%u", &w, &h) != 2 || w < 800 || h < 600 || w > 7680 || h > 4320)
     {
-        log_msg("SIMGOLF_RES=%s not understood (want e.g. 1024x768)", buf);
+        log_msg("SIMGOLF_RES=%s not understood (want e.g. 1280x720; at least 800x600)", buf);
         return;
     }
     memcpy(new_w, orig_w, sizeof(new_w));
