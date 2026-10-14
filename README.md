@@ -62,7 +62,7 @@ Without `SIMGOLF_RES`, the game runs at its normal 800x600.
 
 ## Known issues
 
-- **Looping sound** (fix in testing). The end of a sound, such as a laugh or a "Woohoo!", could keep looping, even after you returned to the main menu. This is a thread race in the game's `sound.dll`: refills of streamed sounds weren't synchronised with its mixer. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
+- **Looping sound** (fixed, in testing). The end of a sound, such as a laugh, a "Woohoo!" or the faint ambient "radar" beeping, could keep looping, even after you returned to the main menu. Wine's `mmioAdvance` drops bytes that the caller hasn't read yet, while Windows keeps them. The game's `sound.dll` relies on the Windows behaviour when streaming longer sounds: with bytes missing, a stream never reaches its end and replays its last buffer forever. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
 
 ## How it works
 

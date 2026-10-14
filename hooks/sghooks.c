@@ -18,6 +18,7 @@
  *                     SGHOOKS_LOG), for mapping the HUD
  */
 #include <windows.h>
+#include <mmsystem.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1382,20 +1383,63 @@ static snd_wndproc_fn snd_wndproc;
 static CRITICAL_SECTION *snd_mixer_lock;
 static BOOL snd_fixed;
 
-static void snd_note(const char *what, BYTE *stream);
-static BOOL snd_log;
+static BOOL snd_log, snd_lock_refills;
+
+/* Stream state for the log: as used by the refill (0x10033300), a stream
+ * holds [0] HMMIO, [2] ring (+0x14 size, +0x18 start, +0x1c read, +0x20 end
+ * of data, +0x24 end), [10]/[11] mmio pchNext/pchEndRead, [0x16] flags,
+ * [0x5c] bytes read, [0x5e] bytes total, [0x4de] write position. */
+static void snd_state(const char *when, DWORD *st)
+{
+    DWORD *ring = (DWORD *)st[2];
+
+    log_msg("%lu snd %s stream %p flags %#lx read %lu/%lu mmio %#lx..%#lx ring %#lx rd %#lx wr %#lx end %#lx w %#lx",
+            GetTickCount(), when, st, st[0x16], st[0x5c], st[0x5e], st[10], st[11],
+            ring ? ring[0x18 / 4] : 0, ring ? ring[0x1c / 4] : 0, ring ? ring[0x20 / 4] : 0,
+            ring ? ring[0x24 / 4] : 0, st[0x4de]);
+}
 
 static LRESULT WINAPI snd_wndproc_hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     LRESULT ret;
 
     if (msg != 0x7eb) return snd_wndproc(hwnd, msg, wp, lp);
-    EnterCriticalSection(snd_mixer_lock);
-    if (snd_log && wp) snd_note("handle", (BYTE *)wp);
+    if (snd_lock_refills) EnterCriticalSection(snd_mixer_lock);
+    if (snd_log && wp) snd_state("before", (DWORD *)wp);
     ret = snd_wndproc(hwnd, msg, wp, lp);
-    if (snd_log && wp) snd_note("handled", (BYTE *)wp);
-    LeaveCriticalSection(snd_mixer_lock);
+    if (snd_log && wp) snd_state("after", (DWORD *)wp);
+    if (snd_lock_refills) LeaveCriticalSection(snd_mixer_lock);
     return ret;
+}
+
+/* Second sound.dll problem, a Wine difference: when reading, Wine's
+ * mmioAdvance loads the buffer after the previous one (from lDiskOffset) and
+ * drops bytes the caller left unconsumed (pchNext < pchEndRead); Windows
+ * continues from the caller's position. sound.dll's stream start fills its
+ * 128 KB ring from the first 128 KB buffer less 4 bytes (the ring keeps a
+ * 4-byte gap), then advances, so 4 bytes of the file are skipped, the bytes
+ * read never reach the data size, the stream never finishes, and its ring
+ * replays forever (Sounds\Effects\desert3.wav every time; voice lines too).
+ * When bytes are left over, read again from the caller's position: after the
+ * advance that position lies outside the new buffer, so mmioSeek really moves
+ * the file position, and a second advance reads from there. */
+typedef MMRESULT (WINAPI *mmio_advance_fn)(HMMIO, MMIOINFO *, UINT);
+static mmio_advance_fn real_mmioAdvance;
+
+static MMRESULT WINAPI snd_mmioAdvance(HMMIO h, MMIOINFO *info, UINT flags)
+{
+    LONG pos;
+    MMRESULT ret;
+
+    if (!info || flags != MMIO_READ || info->pchNext >= info->pchEndRead || !info->pchBuffer)
+        return real_mmioAdvance(h, info, flags);
+    pos = info->lBufOffset + (LONG)(info->pchNext - info->pchBuffer);
+    if ((ret = real_mmioAdvance(h, info, flags)) != MMSYSERR_NOERROR) return ret;
+    if (info->lBufOffset == pos) return ret;   /* already continuing from there */
+    if (mmioSeek(h, pos, SEEK_SET) != pos) return ret;
+    if (snd_log) log_msg("%lu snd mmioAdvance: kept %ld unconsumed bytes (read again from %ld)",
+                         GetTickCount(), info->lBufOffset - pos, pos);
+    return real_mmioAdvance(h, info, flags);
 }
 
 static void fix_sound_dll(void)
@@ -1406,6 +1450,8 @@ static void fix_sound_dll(void)
     DWORD rel, old;
 
     if (snd_fixed || !(snd = GetModuleHandleA("sound.dll"))) return;
+    snd_lock_refills = !GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0);
+    if (!snd_lock_refills && !snd_log) return;
     snd_fixed = TRUE;
     nt = (IMAGE_NT_HEADERS *)((BYTE *)snd + ((IMAGE_DOS_HEADER *)snd)->e_lfanew);
     if (nt->OptionalHeader.SizeOfImage != 0xbe000)
@@ -1420,6 +1466,11 @@ static void fix_sound_dll(void)
         log_msg("sound fix: unexpected code at the window procedure thunk, not patched");
         return;
     }
+    if (!GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0) && !GetEnvironmentVariableA("SGHOOKS_NO_MMIOFIX", NULL, 0))
+    {
+        real_mmioAdvance = hook_import(snd, "WINMM.dll", "mmioAdvance", snd_mmioAdvance);
+        log_msg("sound fix: mmioAdvance %s", real_mmioAdvance ? "keeps unconsumed bytes" : "NOT hooked");
+    }
     snd_wndproc = (snd_wndproc_fn)target;
     snd_mixer_lock = (CRITICAL_SECTION *)((BYTE *)snd + (SND_MIXER_LOCK - 0x10000000));
     if (!VirtualProtect(thunk, 5, PAGE_EXECUTE_READWRITE, &old)) return;
@@ -1427,7 +1478,8 @@ static void fix_sound_dll(void)
     memcpy(thunk + 1, &rel, 4);
     VirtualProtect(thunk, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), thunk, 5);
-    log_msg("sound fix: stream refills run under the mixer lock (sound.dll at %p)", snd);
+    log_msg("sound fix: %s (sound.dll at %p)", snd_lock_refills ? "stream refills run under the mixer lock" :
+            "OFF, refill handler wrapped for logging only", snd);
 }
 
 typedef HMODULE (WINAPI *load_library_fn)(LPCSTR);
@@ -1457,7 +1509,7 @@ static void hook_sound_load(void)
 {
     HMODULE jgld;
 
-    if (GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0)) return;
+    if (GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0) && !snd_log) return;
     real_LoadLibraryA_golf = hook_import(GetModuleHandleA(NULL), "KERNEL32.DLL", "LoadLibraryA", LoadLibraryA_golf);
     if ((jgld = GetModuleHandleA("jgld.dll")))
         real_LoadLibraryA_jgld = hook_import(jgld, "KERNEL32.dll", "LoadLibraryA", LoadLibraryA_jgld);
@@ -1492,12 +1544,12 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
         hook_draws(dir);
     }
     if (screen_w != 800 || screen_h != 600) hook_hud_input();
-    hook_sound_load();
     if (log_file && GetEnvironmentVariableA("SGHOOKS_SNDLOG", path, sizeof(path)))
     {
         InitializeCriticalSection(&snd_lock);
         snd_log = TRUE;
         CloseHandle(CreateThread(NULL, 0, snd_monitor, NULL, 0, NULL));
     }
+    hook_sound_load();
     return TRUE;
 }

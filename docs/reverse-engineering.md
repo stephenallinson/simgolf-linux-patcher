@@ -86,13 +86,13 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
 - Creates DirectSound through `CoCreateInstance(CLSID_DirectSound)` (0x10011d00); its DSOUND ordinal 2 import is `DirectSoundEnumerateA`.
 - Software mixer `FUN_100075e0`, driven by a `timeSetEvent` timer, writes into a 64 KB, 22050 Hz stereo looping DirectSound buffer; `FUN_10008070` converts the mixed doubles to 16-bit.
 - WAV loader `FUN_100326a0` reads `fmt `, `data`, `smpl` (loop points) and `cue `. Files over 128 KB are streamed through a 128 KB in-memory ring (`FUN_10033300`, using mmioAdvance); smaller files load whole.
-- **Looping-sound bug (fixed in sghooks, 2026-10-14):** a sound's last ~0.3 s sometimes repeated forever.
-  - **Refill request:** a streamed sound's ring buffer is refilled on request. The mixer (timer thread, holding the critical section at 0x100b4990) sets bit 0x400 in the stream's flags (+0x58), increments +0x1370, and posts 0x7eb (wParam = stream). golf.exe uses the window path, `PostMessageA` to stream+0x17c.
-  - **Handler:** the window procedure `FUN_10028b70` (class proc, thunk 0x100025ef, stdcall) runs on the main thread and calls `FUN_10034fb0` → `FUN_10033300` (copies mmio data into the ring, and sets 0x20 when the file is fully read), then clears 0x400. It takes **no lock**.
-  - **Reader:** the stream reader (`FUN_10019770` etc.) wraps to the ring start when it reaches the write position before 0x20 is set.
-  - **Failure:** a lost read-modify-write of the flags word between the two threads leaves 0x400 set (no request ever again) or loses 0x20. The reader then cycles the ring's last contents forever.
-  - **Fix:** sghooks runs the 0x7eb handler under the mixer's lock. It patches the thunk as sound.dll loads, through `LoadLibraryA` hooks in golf.exe and jgld.dll. `SGHOOKS_SNDLOG=1` logs requests and handling and reports streams stuck with 0x400 set for over 1 s.
-  - **Normal behaviour:** busy streams request a refill every mixer tick (30 ms), with and without the fix.
+- **Looping-sound bug (fixed in sghooks, 2026-10-14).** The real cause is a Wine difference in `mmioAdvance`.
+  - **Refill path:** a streamed sound's 128 KB ring is refilled by the window procedure `FUN_10028b70` (main thread, on message 0x7eb from the mixer) → `FUN_10034fb0` → `FUN_10033300`. That copies from the mmio buffer and sets flag 0x20 once bytes read (+0x170) equal the data size (+0x178). On a stream (re)start, `FUN_100339c0` seeks to the data, advances, fills the ring with buffer size − 4 bytes (the ring keeps a 4-byte gap), and **advances again with 4 bytes unconsumed**.
+  - **Wine vs Windows:** Wine's `mmioAdvance` (dlls/winmm/mmio.c, `MMIO_GrabNextBuffer` from `lDiskOffset`) drops those bytes. Windows continues from the caller's `pchNext`. So the bytes read stop short of the size, 0x20 is never set, and the reader (`FUN_10019770`), which wraps to the ring start when it reaches the write position, replays the ring forever. Every stream is affected: `Sounds\Effects\desert3.wav` (272,120 bytes) got stuck at 272,116 every time.
+  - **Fix:** sghooks wraps sound.dll's `mmioAdvance` import. When bytes are left over, it advances, seeks back to the caller's position (now outside the buffer, so the file position really moves) and advances again.
+  - **Measured:** 3–8 stuck streams per 1–4 minute run without the fix, none with it (`tools/xdrive/sound-test.sh`, `tools/xdrive/stuck-streams.sh`).
+  - **Also locked:** the 0x7eb handler takes no lock while the mixer (timer thread, critical section 0x100b4990) shares the stream's flags word. sghooks runs the handler under the mixer's lock too. On its own that didn't help in testing, but it removes a real data race.
+  - **Switches:** `SGHOOKS_NO_SOUNDFIX=1` turns both off, and `SGHOOKS_NO_MMIOFIX=1` only the mmio fix. `SGHOOKS_SNDLOG=1` logs refill requests and stream state.
 
 ## Tools
 
