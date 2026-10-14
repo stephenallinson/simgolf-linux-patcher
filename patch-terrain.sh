@@ -74,5 +74,13 @@ hooks="$here/sghooks.dll"
 [ -f "$hooks" ] || hooks="$here/hooks/sghooks.dll"
 if [ -f "$hooks" ]; then
     cp "$hooks" "$game/sghooks.dll"
-    echo "Installed sghooks.dll (higher resolutions: SIMGOLF_RES=1280x720 ./run.sh)."
+    echo "Installed sghooks.dll."
+    ini="$here/settings.ini"
+    [ -f "$ini" ] || ini="$here/hooks/settings.ini"
+    if [ -f "$game/settings.ini" ]; then
+        echo "Kept your existing settings.ini."
+    elif [ -f "$ini" ]; then
+        cp "$ini" "$game/settings.ini"
+        echo "Installed settings.ini (screen size, volumes): $game/settings.ini"
+    fi
 fi

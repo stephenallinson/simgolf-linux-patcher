@@ -21,7 +21,7 @@ fi
 rm -rf "dist/$name"
 mkdir -p "dist/$name/shim/test" "dist/$name/hooks" "dist/$name/tools"
 cp README.md LICENSE patch-terrain.sh run.sh "dist/$name/"
-cp shim/terrgl32.dll hooks/sghooks.dll "dist/$name/"
+cp shim/terrgl32.dll hooks/sghooks.dll hooks/settings.ini "dist/$name/"
 cp shim/terrgl32.c shim/terrgl32.def shim/build.sh "dist/$name/shim/"
 cp shim/test/shimtest.c "dist/$name/shim/test/"
 cp hooks/sghooks.c hooks/build.sh "dist/$name/hooks/"

@@ -33,22 +33,42 @@ Tested on Wine 11.19 (Arch), Mesa 26.2 / RADV, AMD Radeon RX 9070 XT.
 
 To undo everything: `./patch-terrain.sh --revert`.
 
-## Higher resolutions (experimental)
+## Settings
 
-`patch-terrain.sh` also installs `sghooks.dll`. It changes the game in memory at start-up and leaves its files on disk alone. With `SIMGOLF_RES` set, the game runs at that size:
+`patch-terrain.sh` installs a `settings.ini` in the game folder (an existing one is never overwritten). Edit it with any text editor. Changes take effect the next time the game starts.
 
-```sh
-SIMGOLF_RES=1280x720 ./run.sh    # widescreen; 2x on a 2560x1440 monitor
-SIMGOLF_RES=1024x768 ./run.sh
+```ini
+[Display]
+Resolution=1280x720   ; at least 800x600
+Art=native            ; native (original pixel art, 1:1) or large
+
+[Sound]
+Master=100            ; volumes in percent, 0 to 100
+Music=100
+Voices=100
+Effects=100
+Ambience=100
+Interface=100
 ```
 
-- **Course:** uses the whole screen.
-- **Panels:** the stats panel, control wheel, tool palette and mood bar stay at the screen edges.
-- **Centred screens:** reports, menus, the title screen, the world map and the load/save screens are drawn centred, at their original 800x600 size.
-- **Course art:** tiles, objects and golfers are drawn at their original pixel size, 1:1 as at 800x600, so a bigger screen shows more of the course. `SIMGOLF_ART=large` uses the game's own enlarged art for 1024x768 / 1280x1024 instead, chosen by screen height. It's slightly blurrier, and objects don't line up with the ground quite as exactly.
+- **Resolution:** the game has no volume or screen settings of its own; `sghooks.dll` adds them by changing the game in memory at start-up, without touching its files.
+  - The course art is drawn at its original pixel size, so a bigger screen shows more of the course.
+  - The panels stay at the screen edges, and reports, menus, the title screen, the world map and the load/save screens stay 800x600, centred.
+  - `run.sh` scales the result up to fill your monitor, so choose a size your monitor is a whole multiple of:
 
-Without `SIMGOLF_RES`, the game runs at its normal 800x600.
-
+    | Monitor | Resolution |
+    |---|---|
+    | 2560x1440 | 1280x720 |
+    | 3840x2160 | 1920x1080 or 1280x720 |
+    | 1920x1080 | 1920x1080 |
+    | 4:3 | 1024x768 or 800x600 |
+- **Art:** `large` uses the game's own enlarged course art for 1024x768 and 1280x1024, chosen by screen height. It is less sharp, and objects line up with the ground slightly less exactly.
+- **Sound:** sounds are sorted by their folder:
+  - **Voices:** golfers' and celebrities' lines.
+  - **Ambience:** course background loops.
+  - **Interface:** clicks and menu sounds.
+  - **Effects:** everything else.
+- **Overrides:** the environment variables `SIMGOLF_RES` and `SIMGOLF_ART` override `[Display]`, for example `SIMGOLF_RES=1024x768 ./run.sh`.
 
 ## Troubleshooting
 

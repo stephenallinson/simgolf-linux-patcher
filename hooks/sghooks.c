@@ -41,6 +41,31 @@ static void log_msg(const char *fmt, ...)
     LeaveCriticalSection(&log_lock);
 }
 
+/* ---- settings.ini (in the game folder, next to this DLL) ----
+ * [Display] Resolution=WxH, Art=native|large
+ * [Sound] Master, Music, Voices, Effects, Ambience, Interface = 0..100 (%)
+ * The environment variables SIMGOLF_RES and SIMGOLF_ART override [Display]. */
+static char ini_path[MAX_PATH];
+
+static void settings_init(HINSTANCE inst)
+{
+    char *slash;
+
+    GetModuleFileNameA(inst, ini_path, sizeof(ini_path) - 16);
+    if ((slash = strrchr(ini_path, '\\'))) strcpy(slash + 1, "settings.ini");
+    else strcpy(ini_path, "settings.ini");
+}
+
+/* Environment variable env if set, else [section] key from settings.ini. */
+static DWORD setting(const char *env, const char *section, const char *key, char *buf, DWORD size)
+{
+    DWORD n;
+
+    buf[0] = 0;
+    if (env && (n = GetEnvironmentVariableA(env, buf, size)) && n < size) return n;
+    return GetPrivateProfileStringA(section, key, "", buf, size, ini_path);
+}
+
 /* Replace len bytes at addr with repl if they currently equal orig. */
 static BOOL patch_bytes(const char *what, DWORD addr, const void *orig, const void *repl, SIZE_T len)
 {
@@ -992,7 +1017,7 @@ static void patch_course_tier(void)
          * ground are then scaled slightly differently, 16/13 vs 1.25 x 1.3). */
         char art[16] = "";
 
-        GetEnvironmentVariableA("SIMGOLF_ART", art, sizeof(art));
+        setting("SIMGOLF_ART", "Display", "Art", art, sizeof(art));
         if (!_stricmp(art, "large"))
         {
             if (screen_h >= 900) { tier_w = 1280; tier_h = 1024; }
@@ -1198,7 +1223,7 @@ static void patch_resolution(void)
     char buf[32];
     unsigned int w, h;
 
-    if (!GetEnvironmentVariableA("SIMGOLF_RES", buf, sizeof(buf))) return;
+    if (!setting("SIMGOLF_RES", "Display", "Resolution", buf, sizeof(buf))) return;
     if (sscanf(buf, "%ux%u", &w, &h) != 2 || w < 800 || h < 600 || w > 7680 || h > 4320)
     {
         log_msg("SIMGOLF_RES=%s not understood (want e.g. 1280x720; at least 800x600)", buf);
@@ -1427,8 +1452,10 @@ static LRESULT WINAPI snd_wndproc_hook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
  * the file position, and a second advance reads from there. */
 typedef MMRESULT (WINAPI *mmio_advance_fn)(HMMIO, MMIOINFO *, UINT);
 static mmio_advance_fn real_mmioAdvance;
+static BOOL mmio_fix;
 
-static MMRESULT WINAPI snd_mmioAdvance(HMMIO h, MMIOINFO *info, UINT flags)
+/* Advance, keeping bytes the caller hasn't consumed (see above). */
+static MMRESULT advance_keeping(HMMIO h, MMIOINFO *info, UINT flags)
 {
     LONG pos;
     MMRESULT ret;
@@ -1444,6 +1471,184 @@ static MMRESULT WINAPI snd_mmioAdvance(HMMIO h, MMIOINFO *info, UINT flags)
     return real_mmioAdvance(h, info, flags);
 }
 
+/* ---- Volume by category ----
+ * The game has no volume settings. Every sound's samples pass through an mmio
+ * buffer filled by mmioAdvance (short sounds are read whole, longer ones are
+ * streamed), so scale the PCM data there by Master x the sound's category,
+ * which comes from its file name. All of the game's WAVs are 16-bit PCM. */
+enum { VOL_MUSIC, VOL_VOICES, VOL_EFFECTS, VOL_AMBIENCE, VOL_INTERFACE, VOL_CATS };
+static const char *const vol_names[VOL_CATS] = {"Music", "Voices", "Effects", "Ambience", "Interface"};
+static int vol_master = 100, vol_cat[VOL_CATS] = {100, 100, 100, 100, 100};
+
+struct snd_file
+{
+    HMMIO h;
+    LONG data_off, data_len;   /* the data chunk, in file bytes */
+    int cat;
+};
+#define SND_FILES 256
+static struct snd_file snd_files[SND_FILES];
+static CRITICAL_SECTION snd_files_lock;
+
+static int volume_setting(const char *key)
+{
+    char buf[16];
+    int v;
+
+    if (!setting(NULL, "Sound", key, buf, sizeof(buf))) return 100;
+    v = atoi(buf);
+    return v < 0 ? 0 : v > 100 ? 100 : v;
+}
+
+static BOOL volumes_changed(void)
+{
+    int i;
+
+    if (vol_master != 100) return TRUE;
+    for (i = 0; i < VOL_CATS; i++) if (vol_cat[i] != 100) return TRUE;
+    return FALSE;
+}
+
+static void load_volumes(void)
+{
+    int i;
+
+    vol_master = volume_setting("Master");
+    for (i = 0; i < VOL_CATS; i++) vol_cat[i] = volume_setting(vol_names[i]);
+    log_msg("volume: master %d, music %d, voices %d, effects %d, ambience %d, interface %d", vol_master,
+            vol_cat[VOL_MUSIC], vol_cat[VOL_VOICES], vol_cat[VOL_EFFECTS], vol_cat[VOL_AMBIENCE], vol_cat[VOL_INTERFACE]);
+}
+
+/* The category of a sound from its file name (e.g. "sounds\interface\wrong.wav"). */
+static int sound_category(const char *name)
+{
+    static const char *const music[] = {"golf harp", "manifold music", "music idea", "new age", "newhart",
+                                        "romeo and juliet", "sail boat", "steel drum", "credit"};
+    static const char *const ambience[] = {"golfambience", "desert", "lake", "spring", "winter", "grass"};
+    char low[MAX_PATH], *base;
+    int i;
+
+    lstrcpynA(low, name, sizeof(low));
+    CharLowerA(low);
+    for (i = 0; low[i]; i++) if (low[i] == '/') low[i] = '\\';
+    base = strrchr(low, '\\');
+    base = base ? base + 1 : low;
+    if (strstr(low, "sounds\\music\\") || strstr(low, "sounds\\world\\")) return VOL_MUSIC;
+    if (strstr(low, "simsfx\\") || strstr(low, "sounds\\emotion\\") || strstr(low, "sounds\\celebs\\") ||
+        strstr(low, "sounds\\male\\") || strstr(low, "sounds\\female\\")) return VOL_VOICES;
+    if (strstr(low, "sounds\\interface\\")) return VOL_INTERFACE;
+    for (i = 0; i < (int)(sizeof(ambience) / sizeof(ambience[0])); i++)
+        if (!strncmp(base, ambience[i], strlen(ambience[i]))) return VOL_AMBIENCE;
+    for (i = 0; i < (int)(sizeof(music) / sizeof(music[0])); i++)
+        if (!strncmp(base, music[i], strlen(music[i]))) return VOL_MUSIC;
+    return VOL_EFFECTS;
+}
+
+/* Find a WAV file's data chunk; TRUE for 16-bit PCM. */
+static BOOL wav_data(const char *name, LONG *off, LONG *len)
+{
+    HANDLE f = CreateFileA(name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    BYTE hdr[12], ck[8], fmt[16];
+    DWORD got, size;
+    LONG pos = 12;
+    BOOL pcm16 = FALSE, ok = FALSE;
+
+    if (f == INVALID_HANDLE_VALUE) return FALSE;
+    if (!ReadFile(f, hdr, 12, &got, NULL) || got != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4))
+        goto done;
+    while (SetFilePointer(f, pos, NULL, FILE_BEGIN) == (DWORD)pos && ReadFile(f, ck, 8, &got, NULL) && got == 8)
+    {
+        memcpy(&size, ck + 4, 4);
+        if (!memcmp(ck, "fmt ", 4) && size >= 16 && ReadFile(f, fmt, 16, &got, NULL) && got == 16)
+            pcm16 = fmt[0] == 1 && fmt[1] == 0 && fmt[14] == 16 && fmt[15] == 0;
+        else if (!memcmp(ck, "data", 4))
+        {
+            *off = pos + 8;
+            *len = size;
+            ok = pcm16;
+            break;
+        }
+        pos += 8 + size + (size & 1);
+    }
+done:
+    CloseHandle(f);
+    return ok;
+}
+
+/* Scale the samples of h's data chunk that the buffer now holds. */
+static void apply_volume(HMMIO h, MMIOINFO *info)
+{
+    struct snd_file *sf = NULL;
+    LONG start, end, from, to, data_off, data_end;
+    int i, gain;
+    short *p, *e;
+
+    EnterCriticalSection(&snd_files_lock);
+    for (i = 0; i < SND_FILES; i++) if (snd_files[i].h == h) { sf = &snd_files[i]; break; }
+    if (!sf) { LeaveCriticalSection(&snd_files_lock); return; }
+    gain = vol_master * vol_cat[sf->cat];   /* in 1/10000 */
+    data_off = sf->data_off;
+    data_end = sf->data_off + sf->data_len;
+    LeaveCriticalSection(&snd_files_lock);
+    if (gain == 10000 || !info->pchBuffer || info->pchEndRead <= info->pchBuffer) return;
+
+    start = info->lBufOffset;
+    end = start + (LONG)(info->pchEndRead - info->pchBuffer);
+    from = start > data_off ? start : data_off;
+    to = end < data_end ? end : data_end;
+    if ((from - data_off) & 1) from++;          /* whole 16-bit samples only */
+    if (to <= from) return;
+    p = (short *)(info->pchBuffer + (from - start));
+    e = p + (to - from) / 2;
+    for (; p < e; p++) *p = (short)(*p * gain / 10000);
+}
+
+static MMRESULT WINAPI snd_mmioAdvance(HMMIO h, MMIOINFO *info, UINT flags)
+{
+    MMRESULT ret = mmio_fix ? advance_keeping(h, info, flags) : real_mmioAdvance(h, info, flags);
+
+    if (ret == MMSYSERR_NOERROR && info && flags == MMIO_READ) apply_volume(h, info);
+    return ret;
+}
+
+typedef HMMIO (WINAPI *mmio_open_fn)(LPSTR, MMIOINFO *, DWORD);
+typedef MMRESULT (WINAPI *mmio_close_fn)(HMMIO, UINT);
+static mmio_open_fn real_mmioOpenA;
+static mmio_close_fn real_mmioClose;
+
+static HMMIO WINAPI snd_mmioOpenA(LPSTR name, MMIOINFO *info, DWORD flags)
+{
+    HMMIO h = real_mmioOpenA(name, info, flags);
+    LONG off, len;
+    int i;
+
+    if (!h || !name || (flags & (MMIO_WRITE | MMIO_READWRITE)) || !wav_data(name, &off, &len)) return h;
+    EnterCriticalSection(&snd_files_lock);
+    for (i = 0; i < SND_FILES; i++)
+        if (!snd_files[i].h)
+        {
+            snd_files[i].h = h;
+            snd_files[i].data_off = off;
+            snd_files[i].data_len = len;
+            snd_files[i].cat = sound_category(name);
+            break;
+        }
+    LeaveCriticalSection(&snd_files_lock);
+    if (snd_log) log_msg("%lu snd open %s: %s, data %ld+%ld", GetTickCount(), name,
+                         vol_names[sound_category(name)], off, len);
+    return h;
+}
+
+static MMRESULT WINAPI snd_mmioClose(HMMIO h, UINT flags)
+{
+    int i;
+
+    EnterCriticalSection(&snd_files_lock);
+    for (i = 0; i < SND_FILES; i++) if (snd_files[i].h == h) snd_files[i].h = NULL;
+    LeaveCriticalSection(&snd_files_lock);
+    return real_mmioClose(h, flags);
+}
+
 static void fix_sound_dll(void)
 {
     HMODULE snd;
@@ -1452,8 +1657,6 @@ static void fix_sound_dll(void)
     DWORD rel, old;
 
     if (snd_fixed || !(snd = GetModuleHandleA("sound.dll"))) return;
-    snd_lock_refills = !GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0);
-    if (!snd_lock_refills && !snd_log) return;
     snd_fixed = TRUE;
     nt = (IMAGE_NT_HEADERS *)((BYTE *)snd + ((IMAGE_DOS_HEADER *)snd)->e_lfanew);
     if (nt->OptionalHeader.SizeOfImage != 0xbe000)
@@ -1468,11 +1671,21 @@ static void fix_sound_dll(void)
         log_msg("sound fix: unexpected code at the window procedure thunk, not patched");
         return;
     }
-    if (!GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0) && !GetEnvironmentVariableA("SGHOOKS_NO_MMIOFIX", NULL, 0))
+    if (mmio_fix || volumes_changed())
     {
         real_mmioAdvance = hook_import(snd, "WINMM.dll", "mmioAdvance", snd_mmioAdvance);
-        log_msg("sound fix: mmioAdvance %s", real_mmioAdvance ? "keeps unconsumed bytes" : "NOT hooked");
+        log_msg("sound fix: mmioAdvance %s%s", real_mmioAdvance ? "hooked" : "NOT hooked",
+                mmio_fix ? ", keeps unconsumed bytes" : "");
     }
+    if (real_mmioAdvance && volumes_changed())
+    {
+        real_mmioOpenA = hook_import(snd, "WINMM.dll", "mmioOpenA", snd_mmioOpenA);
+        real_mmioClose = hook_import(snd, "WINMM.dll", "mmioClose", snd_mmioClose);
+        log_msg("volume: mmioOpenA %s, mmioClose %s", real_mmioOpenA ? "hooked" : "NOT hooked",
+                real_mmioClose ? "hooked" : "NOT hooked");
+        if (!real_mmioOpenA || !real_mmioClose) real_mmioOpenA = NULL;   /* no table, no scaling */
+    }
+    if (!snd_lock_refills && !snd_log) return;
     snd_wndproc = (snd_wndproc_fn)target;
     snd_mixer_lock = (CRITICAL_SECTION *)((BYTE *)snd + (SND_MIXER_LOCK - 0x10000000));
     if (!VirtualProtect(thunk, 5, PAGE_EXECUTE_READWRITE, &old)) return;
@@ -1511,7 +1724,11 @@ static void hook_sound_load(void)
 {
     HMODULE jgld;
 
-    if (GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0) && !snd_log) return;
+    InitializeCriticalSection(&snd_files_lock);
+    snd_lock_refills = !GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0);
+    mmio_fix = snd_lock_refills && !GetEnvironmentVariableA("SGHOOKS_NO_MMIOFIX", NULL, 0);
+    load_volumes();
+    if (!snd_lock_refills && !mmio_fix && !snd_log && !volumes_changed()) return;
     real_LoadLibraryA_golf = hook_import(GetModuleHandleA(NULL), "KERNEL32.DLL", "LoadLibraryA", LoadLibraryA_golf);
     if ((jgld = GetModuleHandleA("jgld.dll")))
         real_LoadLibraryA_jgld = hook_import(jgld, "KERNEL32.dll", "LoadLibraryA", LoadLibraryA_jgld);
@@ -1528,6 +1745,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
     DisableThreadLibraryCalls(inst);
     InitializeCriticalSection(&log_lock);
+    settings_init(inst);
     if (GetEnvironmentVariableA("SGHOOKS_LOG", path, sizeof(path))) log_file = fopen(path, "w");
 
     /* only patch golf.exe, not e.g. the shim's test programs */

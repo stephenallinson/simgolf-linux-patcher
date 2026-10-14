@@ -8,7 +8,8 @@
 #   WINEPREFIX     prefix with SimGolf installed (default ~/.wine-simgolf)
 #   SIMGOLF_DIR    game folder, if not the default install location
 #   TERRGL32_LOG   Windows path for the GL shim's debug log, e.g. 'Z:\tmp\terrgl32.log'
-#   SIMGOLF_RES    screen size, e.g. 1024x768 (experimental; needs hooks/sghooks.dll installed)
+#   SIMGOLF_RES    screen size, e.g. 1280x720 (overrides Resolution= in the game folder's
+#                  settings.ini; needs sghooks.dll installed)
 #   GAMESCOPE_ARGS gamescope scaling options (default "-S integer -F nearest": crisp, square pixels;
 #                  "-F pixel" or "-F fsr" fill the screen height instead)
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine-simgolf}"
@@ -16,7 +17,9 @@ dir=${SIMGOLF_DIR:-"$WINEPREFIX/drive_c/Program Files (x86)/EA Games/Firaxis Gam
 [ -d "$dir" ] || dir="$WINEPREFIX/drive_c/Program Files/EA Games/Firaxis Games/Sid Meiers SimGolf"
 cd "$dir" || { echo "error: game folder not found; set SIMGOLF_DIR" >&2; exit 1; }
 
-res=${SIMGOLF_RES:-800x600}
+# the screen size: SIMGOLF_RES, else Resolution= in the game folder's settings.ini
+res=${SIMGOLF_RES:-$(sed -n 's/^[[:space:]]*[Rr]esolution[[:space:]]*=[[:space:]]*\([0-9]*x[0-9]*\).*/\1/p' settings.ini 2>/dev/null | head -n 1)}
+res=${res:-800x600}
 w=${res%x*}
 h=${res#*x}
 
