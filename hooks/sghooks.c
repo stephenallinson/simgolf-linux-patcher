@@ -6,6 +6,8 @@
  * so a different game version is left alone.
  *
  * Environment:
+ *   SIMGOLF_ART=large  use the game's enlarged course art (1024x768 / 1280x1024
+ *                     tiers, by screen height) instead of the 800x600 art
  *   SIMGOLF_RES=WxH   screen size instead of 800x600 (experimental); top-level
  *                     UI windows laid out for 800x600 are moved to the matching
  *                     screen edge
@@ -965,8 +967,21 @@ static void patch_course_tier(void)
     DWORD pw = (DWORD)&tier_w, ph = (DWORD)&tier_h;
     int i;
 
-    if (screen_h >= 900) { tier_w = 1280; tier_h = 1024; }
-    else if (screen_h >= 700) { tier_w = 1024; tier_h = 768; }
+    {
+        /* Default: the 800x600 tier at any size, so the pixel-art tiles and
+         * objects are drawn 1:1 and line up exactly; a bigger screen shows
+         * more of the course. SIMGOLF_ART=large picks the game's enlarged
+         * 1024x768 / 1280x1024 art by screen height instead (objects and
+         * ground are then scaled slightly differently, 16/13 vs 1.25 x 1.3). */
+        char art[16] = "";
+
+        GetEnvironmentVariableA("SIMGOLF_ART", art, sizeof(art));
+        if (!_stricmp(art, "large"))
+        {
+            if (screen_h >= 900) { tier_w = 1280; tier_h = 1024; }
+            else if (screen_h >= 700) { tier_w = 1024; tier_h = 768; }
+        }
+    }
     log_msg("course tier %lux%lu", tier_w, tier_h);
     {
         /* object sizes: 0x4628d0, 0x462a43, 0x462c09 load the screen width
@@ -1107,6 +1122,53 @@ static void patch_terrain_tier(void)
     }
 }
 
+/* Terrain::stripRender(Tile *camera, int direction, float angle) redraws a
+ * fixed band of tiles around the camera after a pan (about 18 tiles along
+ * the edge), sized for the tier's own view. When the screen shows more than
+ * that, the band misses the outer tiles (black notches at the edges). Then
+ * golf.exe's import of it (0x4ba144) is pointed at a full
+ * Terrain::render(Tile *camera, float angle) (import 0x4ba15c) instead. */
+#define IMP_STRIP_RENDER 0x4ba144
+#define IMP_RENDER       0x4ba15c
+typedef char (__fastcall *render_fn)(void *terrain, void *edx, void *camera, float angle);
+static render_fn terrain_render;
+
+static void __fastcall strip_render_full(void *terrain, void *edx, void *camera, int direction, float angle)
+{
+    terrain_render(terrain, edx, camera, angle);
+}
+
+static void patch_strip_render(void)
+{
+    HMODULE terrain = GetModuleHandleA("Terrain.dll");
+    IMAGE_NT_HEADERS *nt;
+    BYTE *r, *st;
+
+    if (screen_w <= tier_w && screen_h <= tier_h) return;
+    if (!terrain) { log_msg("Terrain::stripRender: Terrain.dll not loaded"); return; }
+    nt = (IMAGE_NT_HEADERS *)((BYTE *)terrain + ((IMAGE_DOS_HEADER *)terrain)->e_lfanew);
+    r = *(BYTE **)IMP_RENDER;
+    st = *(BYTE **)IMP_STRIP_RENDER;
+    if (r < (BYTE *)terrain || r >= (BYTE *)terrain + nt->OptionalHeader.SizeOfImage ||
+        st < (BYTE *)terrain || st >= (BYTE *)terrain + nt->OptionalHeader.SizeOfImage)
+    {
+        log_msg("Terrain::stripRender: imports not bound to Terrain.dll yet (%p, %p), not patched", r, st);
+        return;
+    }
+    terrain_render = (render_fn)r;
+    {
+        /* render itself only visits tiles within 16 (<< zoom level) of the
+         * camera, enough for the tier's own view; allow 32 (tiles off screen
+         * are still culled, and the range is clamped to the 50x50 map) */
+        static const BYTE range_old[] = {0xba, 0x10, 0x00, 0x00, 0x00};   /* mov edx, 0x10 */
+        static const BYTE range_new[] = {0xba, 0x20, 0x00, 0x00, 0x00};
+        patch_bytes("Terrain::render tile range", (DWORD)((BYTE *)terrain + (0x100059bd - TERRAIN_BASE)),
+                    range_old, range_new, sizeof(range_old));
+    }
+    if (swap_ptr((void **)IMP_STRIP_RENDER, strip_render_full))
+        log_msg("Terrain::stripRender: full redraws instead (screen larger than the tier's view)");
+}
+
 /* The game's main routine (0x45baf0) starts with
  *   mov dword [0x822c8c], 800   ; c7 05 8c 2c 82 00 20 03 00 00
  *   mov dword [0x822c90], 600   ; c7 05 90 2c 82 00 58 02 00 00
@@ -1138,6 +1200,7 @@ static void patch_resolution(void)
         patch_vertical_scale();
         patch_course_tier();
         patch_terrain_tier();
+        patch_strip_render();
         patch_closeup_bounds();
     }
     log_msg("requested resolution %ux%u", w, h);

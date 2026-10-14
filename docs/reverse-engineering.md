@@ -127,6 +127,10 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
 
 - **Clicks right of the tool palette (x ≥ 800):** they now reach the course, through a stub at the palette boundary (0x41e459). Previously every click below y 480 went to the palette.
 
+- **Default size class is now 800x600 at every resolution** (pixel art 1:1). Objects (16/13) and ground (1.25 × 1.3) scaled differently in the bigger classes, so objects drifted from the grid away from the centre. `SIMGOLF_ART=large` keeps the old behaviour.
+- **Object size divisor:** 0x4628d0 / 0x462a43 / 0x462c09 picked it from the screen width (16; 13 above 1000; 10 from 1200). It now follows the size class. The palette previews (0x432480) always use 800.
+- **When the screen exceeds the size class's view:** golf.exe's `Terrain::stripRender` import (0x4ba144) points at a wrapper that calls `Terrain::render`, and render's tile range (`mov edx,0x10` at 0x100059bd) is raised to 32. Before, edge strips missed tiles, leaving black notches after panning.
+
 **Open:**
 1. The golfer close-up inset at widescreen isn't verified on screen yet. It needs a moment in a golfer's shot.
 3. The release version is still 0.1.0, set by `TERRGL32_VERSION`. Bump it before publishing.
