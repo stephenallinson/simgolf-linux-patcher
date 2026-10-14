@@ -35,7 +35,10 @@ To undo everything: `./patch-terrain.sh --revert`.
 
 ## Settings
 
-`patch-terrain.sh` installs a `settings.ini` in the game folder (an existing one is never overwritten). Edit it with any text editor. Changes take effect the next time the game starts.
+`patch-terrain.sh` installs a `settings.ini` in the game folder (an existing one is never overwritten).
+
+- **Volumes:** set them in the game, under the control wheel's **System** menu (the wrench), **Sound Settings...**. Each click on a volume steps it down by 20% (from 0% it goes back to 100%). Changes apply at once and are saved to `settings.ini`.
+- **Everything else:** edit `settings.ini` with any text editor; changes take effect the next time the game starts.
 
 ```ini
 [Display]

@@ -737,9 +737,18 @@ static void *const palette_hook[PALETTE_FUNCS] =
 typedef unsigned int (__cdecl *menu_fn)(int x, int y, unsigned int flags, int a4, unsigned int a5);
 static menu_fn menu_orig;
 
+/* The menu text is the global string at 0x51a068: lines separated by '\n',
+ * items starting with a space (other lines are titles); the function returns
+ * the chosen item's index, or a value past the last item when cancelled. */
+#define MENU_TEXT ((char *)0x51a068)
+#define SYSTEM_MENU_CALLER 0x43292a   /* the wheel's System menu: 8 items */
+static void sound_settings_menu(int x, int y, unsigned int flags, int a4, unsigned int a5);
+
 static unsigned int __cdecl menu_hook(int x, int y, unsigned int flags, int a4, unsigned int a5)
 {
     DWORD caller = (DWORD)__builtin_return_address(0);
+    unsigned int ret, item = 0;
+    char *at, *p;
 
     if (caller == 0x432820 || caller == 0x43292a || caller == 0x4329e2)
         y += (int)screen_h - 600;   /* from the wheel's click handler */
@@ -748,7 +757,21 @@ static unsigned int __cdecl menu_hook(int x, int y, unsigned int flags, int a4, 
         x += ((int)screen_w - 800) / 2;
         y += ((int)screen_h - 600) / 2;
     }
-    return menu_orig(x, y, flags, a4, a5);
+    if (caller != SYSTEM_MENU_CALLER || !(at = strstr(MENU_TEXT, " Edit Preferences\n")))
+        return menu_orig(x, y, flags, a4, a5);
+
+    /* add " Sound Settings..." after Edit Preferences */
+    at = strchr(at, '\n') + 1;
+    for (p = MENU_TEXT; p < at; p++) if (*p == '\n') item++;
+    memmove(at + 19, at, strlen(at) + 1);
+    memcpy(at, " Sound Settings...\n", 19);
+    ret = menu_orig(x, y, flags, a4, a5);
+    if (ret == item)
+    {
+        sound_settings_menu(x, y, flags, a4, a5);
+        return 0xffffffff;   /* nothing for the System menu to do */
+    }
+    return ret > item && ret < 0x100 ? ret - 1 : ret;
 }
 
 /* Mouse position: void __thiscall get_mouse(int *x, int *y) at 0x47ab50.
@@ -860,6 +883,17 @@ static void patch_palette_boundary(int dy)
     patch_bytes("bottom HUD click boundary (palette)", 0x41e459, cmp_y, call_ins, sizeof(cmp_y));
 }
 
+/* Text menus: positioned for the screen size, and the System menu gets a
+ * Sound Settings item (at any size). */
+static void hook_menus(void)
+{
+    static const BYTE menu_prologue[] = {0x83, 0xec, 0x48, 0x8b, 0x44, 0x24, 0x54};  /* sub esp,0x48; mov eax,[esp+0x54] */
+
+    if (GetEnvironmentVariableA("SGHOOKS_NO_MENUS", NULL, 0)) return;
+    menu_orig = install_hook("text menus and message boxes", 0x46d6e0, menu_prologue,
+                             sizeof(menu_prologue), menu_hook);
+}
+
 static void hook_hud_input(void)
 {
     static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
@@ -879,12 +913,6 @@ static void hook_hud_input(void)
         if (prologue[0] != 0xa1) { log_msg("palette function %#lx: unexpected prologue, not hooked", palette_addr[i]); continue; }
         snprintf(what, sizeof(what), "tool palette function %#lx", palette_addr[i]);
         palette_orig[i] = install_hook(what, palette_addr[i], prologue, 5, palette_hook[i]);
-    }
-    if (!GetEnvironmentVariableA("SGHOOKS_NO_MENUS", NULL, 0))
-    {
-        static const BYTE menu_prologue[] = {0x83, 0xec, 0x48, 0x8b, 0x44, 0x24, 0x54};  /* sub esp,0x48; mov eax,[esp+0x54] */
-        menu_orig = install_hook("text menus and message boxes", 0x46d6e0, menu_prologue,
-                                 sizeof(menu_prologue), menu_hook);
     }
     {
         static const BYTE mouse_prologue[] = {0x83, 0xec, 0x10, 0x53, 0x56};  /* sub esp,0x10; push ebx; push esi */
@@ -1500,15 +1528,6 @@ static int volume_setting(const char *key)
     return v < 0 ? 0 : v > 100 ? 100 : v;
 }
 
-static BOOL volumes_changed(void)
-{
-    int i;
-
-    if (vol_master != 100) return TRUE;
-    for (i = 0; i < VOL_CATS; i++) if (vol_cat[i] != 100) return TRUE;
-    return FALSE;
-}
-
 static void load_volumes(void)
 {
     int i;
@@ -1649,6 +1668,32 @@ static MMRESULT WINAPI snd_mmioClose(HMMIO h, UINT flags)
     return real_mmioClose(h, flags);
 }
 
+/* The in-game "Sound Settings" menu (from the System menu): one line per
+ * volume; choosing a line steps it down by 20 (0 wraps to 100) and reopens the
+ * menu. Changes apply to sounds read from then on (the game reopens a sound's
+ * file each time it plays) and are saved to settings.ini. */
+static void sound_settings_menu(int x, int y, unsigned int flags, int a4, unsigned int a5)
+{
+    for (;;)
+    {
+        char *t = MENU_TEXT, num[16];
+        unsigned int ret;
+        int i, *v;
+
+        t += sprintf(t, "Sound Settings\n Master volume: %d%%\n", vol_master);
+        for (i = 0; i < VOL_CATS; i++) t += sprintf(t, " %s: %d%%\n", vol_names[i], vol_cat[i]);
+        sprintf(t, " Done\n");
+        ret = menu_orig(x, y, flags, a4, a5);
+        if (ret > VOL_CATS) break;   /* Done, or cancelled */
+        v = ret == 0 ? &vol_master : &vol_cat[ret - 1];
+        *v = *v == 0 ? 100 : ((*v - 1) / 20) * 20;
+        sprintf(num, "%d", *v);
+        WritePrivateProfileStringA("Sound", ret == 0 ? "Master" : vol_names[ret - 1], num, ini_path);
+        log_msg("sound settings: %s %d", ret == 0 ? "Master" : vol_names[ret - 1], *v);
+    }
+    MENU_TEXT[0] = 0;
+}
+
 static void fix_sound_dll(void)
 {
     HMODULE snd;
@@ -1671,13 +1716,13 @@ static void fix_sound_dll(void)
         log_msg("sound fix: unexpected code at the window procedure thunk, not patched");
         return;
     }
-    if (mmio_fix || volumes_changed())
+    if (TRUE)   /* also for volume changes made in the game */
     {
         real_mmioAdvance = hook_import(snd, "WINMM.dll", "mmioAdvance", snd_mmioAdvance);
         log_msg("sound fix: mmioAdvance %s%s", real_mmioAdvance ? "hooked" : "NOT hooked",
                 mmio_fix ? ", keeps unconsumed bytes" : "");
     }
-    if (real_mmioAdvance && volumes_changed())
+    if (real_mmioAdvance)
     {
         real_mmioOpenA = hook_import(snd, "WINMM.dll", "mmioOpenA", snd_mmioOpenA);
         real_mmioClose = hook_import(snd, "WINMM.dll", "mmioClose", snd_mmioClose);
@@ -1728,7 +1773,7 @@ static void hook_sound_load(void)
     snd_lock_refills = !GetEnvironmentVariableA("SGHOOKS_NO_SOUNDFIX", NULL, 0);
     mmio_fix = snd_lock_refills && !GetEnvironmentVariableA("SGHOOKS_NO_MMIOFIX", NULL, 0);
     load_volumes();
-    if (!snd_lock_refills && !mmio_fix && !snd_log && !volumes_changed()) return;
+    /* always hook: the volume can be changed from the game's menus */
     real_LoadLibraryA_golf = hook_import(GetModuleHandleA(NULL), "KERNEL32.DLL", "LoadLibraryA", LoadLibraryA_golf);
     if ((jgld = GetModuleHandleA("jgld.dll")))
         real_LoadLibraryA_jgld = hook_import(jgld, "KERNEL32.dll", "LoadLibraryA", LoadLibraryA_jgld);
@@ -1764,6 +1809,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
         hook_draws(dir);
     }
     if (screen_w != 800 || screen_h != 600) hook_hud_input();
+    hook_menus();
     if (log_file && GetEnvironmentVariableA("SGHOOKS_SNDLOG", path, sizeof(path)))
     {
         InitializeCriticalSection(&snd_lock);
