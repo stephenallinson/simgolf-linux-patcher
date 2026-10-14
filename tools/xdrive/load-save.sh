@@ -4,8 +4,10 @@
 #
 #   tools/xdrive/load-save.sh 1280x720 [display]   (default display :77)
 #   DISPLAY=:77 tools/xdrive/xdrive click X Y; DISPLAY=:77 import -window root shot.png
+#   tools/xdrive/load-save.sh stop                 stop the game, restore saves
 #
-# The game runs until `WINEPREFIX=~/.wine-simgolf wineserver -k`.
+# The game autosaves while it runs, so the save folder (and top10.sve) is
+# backed up before starting and restored by "stop" (or the next start).
 res=${1:-1280x720}
 disp=${2:-:77}
 w=${res%x*}
@@ -15,10 +17,28 @@ x="$here/xdrive"
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine-simgolf}"
 dir=${SIMGOLF_DIR:-"$WINEPREFIX/drive_c/Program Files (x86)/EA Games/Firaxis Games/Sid Meiers SimGolf"}
 
-[ -x "$x" ] || "$here/build.sh" || exit 1
+backup="${XDG_CACHE_HOME:-$HOME/.cache}/simgolf-xdrive-saves"
+
+restore() {
+    [ -f "$backup/complete" ] || { rm -rf "$backup"; return 0; }
+    rm -rf "$dir/Saved Games"
+    cp -a "$backup/Saved Games" "$dir/Saved Games"
+    [ -f "$backup/top10.sve" ] && cp -a "$backup/top10.sve" "$dir/top10.sve"
+    rm -rf "$backup"
+    echo "restored saved games"
+}
+
 wineserver -k 2>/dev/null
 sleep 2
-pkill -f "^Xvfb $disp " 2>/dev/null
+pkill -f "^Xvfb :7[0-9] " 2>/dev/null
+restore
+[ "$1" = stop ] && exit 0
+
+[ -x "$x" ] || "$here/build.sh" || exit 1
+mkdir -p "$backup"
+cp -a "$dir/Saved Games" "$backup/Saved Games" || { echo "error: can't back up saved games" >&2; exit 1; }
+if [ -f "$dir/top10.sve" ]; then cp -a "$dir/top10.sve" "$backup/top10.sve" || exit 1; fi
+touch "$backup/complete"
 Xvfb "$disp" -screen 0 "${w}x${h}x24" -nolisten tcp >/dev/null 2>&1 &
 sleep 2
 (cd "$dir" && env -u WAYLAND_DISPLAY DISPLAY="$disp" SIMGOLF_RES="$res" setsid wine golf.exe >/dev/null 2>&1 &)
