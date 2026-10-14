@@ -2,7 +2,7 @@
 
 A fix that makes **Sid Meier's SimGolf** (2002, Firaxis/EA) playable under Wine on Linux. Without it, the course terrain renders as garbage, as black areas, or not at all. The course is built from tiles drawn with OpenGL, and those draws break under Wine.
 
-This project contains **no game files**. You need your own installed copy of SimGolf, patched to 1.03. The fix changes two bytes in your own `Terrain.dll` and adds two small DLLs of its own: `terrgl32.dll`, and `sghooks.dll` for optional higher resolutions.
+This project contains **no game files**. You need your own installed copy of SimGolf, patched to 1.03. The fix changes two bytes in your own `Terrain.dll` and adds two small DLLs of its own: `terrgl32.dll`, and `sghooks.dll`, which fixes a looping-sound bug and enables optional higher resolutions.
 
 Tested on Wine 11.19 (Arch), Mesa 26.2 / RADV, AMD Radeon RX 9070 XT.
 
@@ -62,7 +62,7 @@ Without `SIMGOLF_RES`, the game runs at its normal 800x600.
 
 ## Known issues
 
-- **Looping sound.** The "bang" when you place a building can keep looping, even after you return to the main menu. The game plays its sounds through DirectSound. This is under investigation.
+- **Looping sound** (fix in testing). The end of a sound, such as a laugh or a "Woohoo!", could keep looping, even after you returned to the main menu. This is a thread race in the game's `sound.dll`: refills of streamed sounds weren't synchronised with its mixer. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
 
 ## How it works
 
