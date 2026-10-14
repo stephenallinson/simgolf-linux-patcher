@@ -125,9 +125,10 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
 - **Release:** `make-release.sh` ships sghooks, `patch-terrain.sh` installs it, and the README documents `SIMGOLF_RES`.
 - **Checked at 1280x720:** report darkening, centred reports and the Information menu.
 
+- **Clicks right of the tool palette (x ≥ 800):** they now reach the course, through a stub at the palette boundary (0x41e459). Previously every click below y 480 went to the palette.
+
 **Open:**
 1. The golfer close-up inset at widescreen isn't verified on screen yet. It needs a moment in a golfer's shot.
-2. Palette clicks at x ≥ 790 (where the golfer list used to overflow) still reach the hidden groups.
 3. The release version is still 0.1.0, set by `TERRGL32_VERSION`. Bump it before publishing.
 
-**Testing without the monitor:** `tools/xdrive/load-save.sh WxH :77` runs the game on a private Xvfb display, skips the intro and loads the 8th save. Then use `DISPLAY=:77 tools/xdrive/xdrive click X Y` / `key Escape` and `DISPLAY=:77 import -window root shot.png`. Wheel buttons at 1280x720: + (32,662), − (32,708). At 1024x768 they're 48 px lower. Only one game can run per Wine prefix. Stop it with `WINEPREFIX=~/.wine-simgolf wineserver -k; pkill -f '^Xvfb :7'`. Don't use `pkill -f golf.exe`: it matches the shell running it.
+**Testing without the monitor:** `tools/xdrive/load-save.sh WxH :77` runs the game on a private Xvfb display, skips the intro and loads the 8th save. Then use `DISPLAY=:77 tools/xdrive/xdrive click X Y` / `key Escape` and `DISPLAY=:77 import -window root shot.png`. Wheel buttons at 1280x720: + (32,662), − (32,708). At 1024x768 they're 48 px lower. Only one game can run per Wine prefix. Stop it with `tools/xdrive/load-save.sh stop`, which also restores the saved games. The game autosaves while it runs, so the script backs up `Saved Games` and `top10.sve` to `~/.cache/simgolf-xdrive-saves` first. Don't use `pkill -f golf.exe`: it matches the shell running it.
