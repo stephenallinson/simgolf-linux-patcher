@@ -249,11 +249,17 @@ static const struct hud_rule hud_rules[] =
      * opened through 0x46ddd0 from the title screen and elsewhere */
     {"load/save screen", 0x43a8c0, 0x43b610, ANCHOR_CENTER},
     {"load/save screen", 0x43b610, 0x43cb50, ANCHOR_CENTER},
+    /* your golfer's character screen (name, personality, skills, sayings),
+     * from the golfer palette's button */
+    {"golfer screen", 0x4385d0, 0x43a400, ANCHOR_CENTER},
     /* Top 10 Designers (from the wheel's Information menu) */
     {"top 10 designers", 0x473470, 0x473a70, ANCHOR_CENTER},
     /* speech bubble along the top (face and message), 0x40d320, called each
      * frame through 0x40d6a0 */
     {"speech bubble", 0x40d320, 0x40d6a0, ANCHOR_TOP},
+    /* playing as your golfer (palette mode 3): the shot info in the palette
+     * (Attitude, Club, Distance, Lie, traits), drawn by the main routine */
+    {"golfer shot info", 0x41b65b, 0x41bad3, ANCHOR_BOTTOM},
     /* HUD routine (0x40f5c0): money / happiness / rating panels, sprites and
      * text, and their drop shadows (sprite +0x6c through 0x421b90) */
     {"stats panel", 0x4194b3, 0x419740, ANCHOR_RIGHT},
@@ -920,6 +926,15 @@ static void hook_hud_input(void)
     }
     move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
     patch_palette_boundary(dy);
+    {
+        /* playing as your golfer, the aim follows the mouse only above the
+         * palette: cmp dword [esp+0x5c], 0x1e0 (mouse y < 480) at 0x41b21c */
+        BYTE old_ins[8] = {0x81, 0x7c, 0x24, 0x5c}, new_ins[8] = {0x81, 0x7c, 0x24, 0x5c};
+        DWORD v = 0x1e0, nv = 0x1e0 + dy;
+        memcpy(old_ins + 4, &v, 4);
+        memcpy(new_ins + 4, &nv, 4);
+        patch_bytes("golfer aim boundary", 0x41b21c, old_ins, new_ins, 8);
+    }
     patch_file_lists();
 }
 
