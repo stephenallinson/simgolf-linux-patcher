@@ -67,7 +67,8 @@ Interface=100
     | 1920x1080 | 1920x1080 |
     | 4:3 | 1024x768 or 800x600 |
 - **Art:** `large` uses the game's own enlarged course art for 1024x768 and 1280x1024, chosen by screen height. It is less sharp, and objects line up with the ground slightly less exactly.
-- **Sound:** sounds are sorted by their folder:
+- **Sound:** sounds are sorted by their folder and name:
+  - **Music:** the songs, and the short cues that start a golfer's storyline.
   - **Voices:** golfers' and celebrities' lines.
   - **Ambience:** course background loops.
   - **Interface:** clicks and menu sounds.
@@ -89,7 +90,10 @@ Interface=100
 
 ## Known issues
 
-- **Looping sound** (fixed, in testing). The end of a sound, such as a laugh, a "Woohoo!" or the faint ambient "radar" beeping, could keep looping, even after you returned to the main menu. Wine's `mmioAdvance` drops bytes that the caller hasn't read yet, while Windows keeps them. The game's `sound.dll` relies on the Windows behaviour when streaming longer sounds: with bytes missing, a stream never reaches its end and replays its last buffer forever. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
+- **Running Windows versions of SimGolf other than 1.03** isn't supported; `patch-terrain.sh` refuses an unknown `Terrain.dll`.
+- **Wide resolutions** are new in 0.2.0. If a screen or panel shows up in the wrong place, please open an issue with a screenshot.
+
+- **Looping sound** (fixed in 0.2.0). The end of a sound, such as a laugh, a "Woohoo!" or the faint ambient "radar" beeping, could keep looping, even after you returned to the main menu. Wine's `mmioAdvance` drops bytes that the caller hasn't read yet, while Windows keeps them. The game's `sound.dll` relies on the Windows behaviour when streaming longer sounds: with bytes missing, a stream never reaches its end and replays its last buffer forever. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
 
 ## How it works
 

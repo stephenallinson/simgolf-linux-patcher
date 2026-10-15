@@ -139,6 +139,5 @@ See the main notes in CLAUDE.md / README: a debug build with named C++ exports. 
 
 **Open:**
 1. The golfer close-up inset at widescreen isn't verified on screen yet. It needs a moment in a golfer's shot.
-3. The release version is still 0.1.0, set by `TERRGL32_VERSION`. Bump it before publishing.
 
 **Testing without the monitor:** `tools/xdrive/load-save.sh WxH :77` runs the game on a private Xvfb display, skips the intro and loads the 8th save. Then use `DISPLAY=:77 tools/xdrive/xdrive click X Y` / `key Escape` and `DISPLAY=:77 import -window root shot.png`. Wheel buttons at 1280x720: + (32,662), − (32,708). At 1024x768 they're 48 px lower. Only one game can run per Wine prefix. Stop it with `tools/xdrive/load-save.sh stop`, which also restores the saved games. The game autosaves while it runs, so the script backs up `Saved Games` and `top10.sve` to `~/.cache/simgolf-xdrive-saves` first. Don't use `pkill -f golf.exe`: it matches the shell running it.
