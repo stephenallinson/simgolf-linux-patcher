@@ -569,14 +569,17 @@ static BOOL WINAPI TextOutA_hook(HDC dc, int x, int y, LPCSTR str, int len)
     return real_TextOutA(dc, x, y, str, len);
 }
 
-/* Rectangle fill: int __thiscall fill(x, y, w, h, colour) at 0x480b00 (the
- * mood bar's number boxes, among others). Draws through it follow the same
- * HUD rules. */
+/* Rectangle fill: int __thiscall fill(x, y, w, h, colour) at 0x478af0, on a
+ * surface object (0x480b00 calls it for the window's back buffer; the mood
+ * bar's number boxes, message box outlines, ...). Draws through it follow
+ * the same HUD rules. */
 typedef int (__fastcall *fill_fn)(void *self, void *edx, int x, int y, int w, int h, unsigned int colour);
 static fill_fn fill_orig;
 
 static int __fastcall fill_hook(void *self, void *edx, int x, int y, int w, int h, unsigned int colour)
 {
+    /* self holds the jgld surface at +4; only fills on the screen move */
+    if (!self || !is_screen(*(void **)((BYTE *)self + 4))) return fill_orig(self, edx, x, y, w, h, colour);
     place_draw("fill", self, &x, &y, w, h, NULL);
     if (draw_clipped) { draw_clipped = FALSE; return 0; }
     return fill_orig(self, edx, x, y, w, h, colour);
@@ -587,7 +590,7 @@ static int __fastcall fill_hook(void *self, void *edx, int x, int y, int w, int 
 #define MAIN_WINDOW 0x519a60
 static void fill_black(int x, int y, int w, int h)
 {
-    if (fill_orig && w > 0 && h > 0) fill_orig((void *)MAIN_WINDOW, NULL, x, y, w, h, 0);
+    if (fill_orig && w > 0 && h > 0) fill_orig((BYTE *)MAIN_WINDOW + 0x274, NULL, x, y, w, h, 0);
 }
 
 /* Sprite +0x94: blended draw (target, x, y, factor, clip, flag), ret 0x18.
@@ -689,8 +692,10 @@ static void hook_draws(const char *dir)
     surf_blit_40 = swap_ptr(&surf[0x40 / 4], surf_blit_40_hook);
     real_TextOutA = hook_import(jgld, "GDI32.dll", "TextOutA", TextOutA_hook);
     {
-        static const BYTE fill_prologue[] = {0x8b, 0x44, 0x24, 0x14, 0x8b, 0x54, 0x24, 0x10};  /* mov eax,[esp+0x14]; mov edx,[esp+0x10] */
-        fill_orig = install_hook("rectangle fill", 0x480b00, fill_prologue, sizeof(fill_prologue), fill_hook);
+        /* the surface fill under 0x480b00 (window fills, at window+0x274) and
+         * direct calls (e.g. message box outlines) */
+        static const BYTE fill_prologue[] = {0x83, 0xec, 0x10, 0x8b, 0x44, 0x24, 0x14};  /* sub esp,0x10; mov eax,[esp+0x14] */
+        fill_orig = install_hook("rectangle fill", 0x478af0, fill_prologue, sizeof(fill_prologue), fill_hook);
     }
     log_msg("draw hooks: jgld.dll at %p, TextOutA %s", jgld, real_TextOutA ? "hooked" : "NOT hooked");
 }
@@ -788,12 +793,18 @@ static unsigned int __cdecl menu_hook(int x, int y, unsigned int flags, int a4, 
 typedef void (__fastcall *get_mouse_fn)(void *self, void *edx, int *x, int *y);
 static get_mouse_fn get_mouse_orig;
 
+static void test_upgrade_check(void);
+static int test_upgrade_points;
+static DWORD test_upgrade_at;
+
 static void __fastcall get_mouse_hook(void *self, void *edx, int *x, int *y)
 {
     const struct hud_rule *rule;
     DWORD callers[MAX_CALLERS];
     int n;
 
+    if (test_upgrade_points && GetTickCount() >= test_upgrade_at) { static int k; if (k++ < 10) log_msg("test: getter called from %p", __builtin_return_address(0)); }
+    if (test_upgrade_points && (DWORD)__builtin_return_address(0) >= MAIN_START && (DWORD)__builtin_return_address(0) < MAIN_END) test_upgrade_check();
     get_mouse_orig(self, edx, x, y);
     if (!x || !y) return;
     n = golf_callers(callers, MAX_CALLERS);
@@ -942,6 +953,76 @@ static void palette_gap_stub(const char *what, DWORD site, const BYTE *orig, int
     patch_bytes(what, site, orig, jmp, len);
 }
 
+/* Code that reads the click position globals (0x822d60 x, 0x822d64 y)
+ * directly misses the centring of the screen it belongs to. Replace such a
+ * load (mov reg, [global]) with a call to a stub that returns the position
+ * moved back by the centring offset: when the call stack is in a centred
+ * screen (like the mouse getter), or always (for code that only runs while a
+ * centred report is up). */
+static int __cdecl click_pos(int is_y, int always)
+{
+    int v = *(int *)(is_y ? 0x822d64 : 0x822d60);
+    BOOL centred = always;
+
+    if (!centred)
+    {
+        DWORD callers[MAX_CALLERS];
+        const struct hud_rule *rule = find_rule(callers, golf_callers(callers, MAX_CALLERS), 0, 0);
+        centred = rule && rule->anchor == ANCHOR_CENTER;
+    }
+    if (centred) v -= is_y ? ((int)screen_h - 600) / 2 : ((int)screen_w - 800) / 2;
+    return v;
+}
+
+/* reg: 0 eax (a1 addr, 5 bytes), 1 ecx (8b 0d addr), 2 edx (8b 15 addr), 6 bytes */
+static void patch_click_load(const char *what, DWORD site, int reg, int is_y, int always)
+{
+    static BYTE *pool;
+    static int used;
+    BYTE *st, old_ins[6], new_ins[6];
+    DWORD addr = is_y ? 0x822d64 : 0x822d60, rel;
+    int n = 0, len = reg ? 6 : 5;
+
+    if (!pool && !(pool = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE))) return;
+    if (used + 48 > 4096) return;
+    st = pool + used;
+    /* save the caller-saved registers we don't return in */
+    if (reg != 0) st[n++] = 0x50;                    /* push eax */
+    if (reg != 1) st[n++] = 0x51;                    /* push ecx */
+    if (reg != 2) st[n++] = 0x52;                    /* push edx */
+    st[n++] = 0x6a; st[n++] = (BYTE)always;          /* push always */
+    st[n++] = 0x6a; st[n++] = (BYTE)is_y;            /* push is_y */
+    st[n++] = 0xe8; rel = (DWORD)click_pos - (DWORD)(st + n + 4); memcpy(st + n, &rel, 4); n += 4;
+    st[n++] = 0x83; st[n++] = 0xc4; st[n++] = 0x08;  /* add esp, 8 */
+    if (reg == 1) { st[n++] = 0x89; st[n++] = 0xc1; }   /* mov ecx, eax */
+    if (reg == 2) { st[n++] = 0x89; st[n++] = 0xc2; }   /* mov edx, eax */
+    if (reg != 2) st[n++] = 0x5a;                    /* pop edx */
+    if (reg != 1) st[n++] = 0x59;                    /* pop ecx */
+    if (reg != 0) st[n++] = 0x58;                    /* pop eax */
+    st[n++] = 0xc3;                                  /* ret */
+    used += (n + 15) & ~15;
+
+    if (reg == 0) { old_ins[0] = 0xa1; memcpy(old_ins + 1, &addr, 4); }
+    else { old_ins[0] = 0x8b; old_ins[1] = reg == 1 ? 0x0d : 0x15; memcpy(old_ins + 2, &addr, 4); }
+    new_ins[0] = 0xe8;
+    rel = (DWORD)st - (site + 5);
+    memcpy(new_ins + 1, &rel, 4);
+    if (len == 6) new_ins[5] = 0x90;
+    patch_bytes(what, site, old_ins, new_ins, len);
+}
+
+static void patch_click_reads(void)
+{
+    if (GetEnvironmentVariableA("SGHOOKS_NO_CLICKFIX", NULL, 0)) return;
+    /* the skill upgrade screen (0x45f0f0, from Professional Accomplishments):
+     * its accept button test */
+    patch_click_load("upgrade screen click x", 0x45f60b, 0, 0, 0);
+    patch_click_load("upgrade screen click y", 0x45f62c, 0, 1, 0);
+    /* main loop, while a report is up: a click on the report closes it */
+    patch_click_load("report close click y", 0x41f31e, 0, 1, 1);
+    patch_click_load("report close click x", 0x41f32a, 2, 0, 1);
+}
+
 static void hook_hud_input(void)
 {
     static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
@@ -997,6 +1078,7 @@ static void hook_hud_input(void)
         palette_gap_stub("course hover boundary", 0x419c20, hover_old, sizeof(hover_old), FALSE, Y_ECX_EDI, 0, 0x419c28, 0x419d06);
     }
     patch_file_lists();
+    patch_click_reads();
 }
 
 /* Edge scrolling (main loop, after reading the mouse at 0x41e174) pans when
@@ -1858,6 +1940,27 @@ static void hook_sound_load(void)
     fix_sound_dll();
 }
 
+/* Testing: SGHOOKS_TEST_UPGRADE=n opens the skill upgrade screen with n
+ * points (0x45f0f0(name, 0, n, -1, 200), as the game does), once, from the
+ * main loop's mouse read SGHOOKS_TEST_DELAY seconds (default 60) after start. */
+
+static void test_upgrade_check(void)
+{
+    typedef int (__cdecl *upgrade_fn)(const char *, unsigned int, int, int, int);
+    int n = test_upgrade_points;
+
+    if (!n || GetTickCount() < test_upgrade_at) return;
+    test_upgrade_points = 0;
+    log_msg("test: opening the skill upgrade screen with %d points", n);
+    {
+        /* as if called from Professional Accomplishments (0x46f117), whose
+         * return address the caller scan then finds on the stack */
+        volatile DWORD from_report = 0x46f11c;
+        log_msg("test: upgrade screen returned %d", ((upgrade_fn)0x45f0f0)((const char *)0x4d6098, 0, n, -1, 200));
+        (void)from_report;
+    }
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
 {
     char path[MAX_PATH];
@@ -1893,5 +1996,12 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
         CloseHandle(CreateThread(NULL, 0, snd_monitor, NULL, 0, NULL));
     }
     hook_sound_load();
+    if (GetEnvironmentVariableA("SGHOOKS_TEST_UPGRADE", path, sizeof(path)))
+    {
+        char d[16] = "60";
+        GetEnvironmentVariableA("SGHOOKS_TEST_DELAY", d, sizeof(d));
+        test_upgrade_points = atoi(path);
+        test_upgrade_at = GetTickCount() + atoi(d) * 1000;
+    }
     return TRUE;
 }
