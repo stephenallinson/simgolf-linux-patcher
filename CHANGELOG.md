@@ -25,5 +25,9 @@ The first public release. It needs your own copy of SimGolf, patched to 1.03.
 - A `settings.ini` in the game folder, for `Resolution`, `Art`, `LockMouse` and the volumes. `patch-terrain.sh` installs it and never overwrites an existing one.
 - `LockMouse=1` keeps the mouse inside the game window, so panning at a screen edge can't slide the pointer onto another monitor.
 
+### Installing
+- Step-by-step install instructions in the README for players new to Linux and Wine, from installing Wine to a menu entry for the game.
+- `patch-terrain.sh` refuses a `golf.exe` other than 1.03, before changing anything; `sghooks.dll` leaves any other version alone too.
+
 ### Known issues
 - The golfer close-up inset at wide resolutions hasn't been checked on screen yet.

@@ -12,6 +12,7 @@
 set -e
 
 ORIG_SHA256=378e61d2f2061f85e517eade8b64e92ecde00d30ab866c091d55cb737adce0a4
+GOLF103_SHA256=98df906b43f8822f7df6772834a15d706fab65a26310bb67a7ab36f2971ec176
 PFD_OFFSET=$((0x63e10))
 COLOR_OFFSET=$((0x63e19))
 IMPORT_OFFSET=$((0x699d2))
@@ -44,6 +45,12 @@ fi
 shim="$here/terrgl32.dll"
 [ -f "$shim" ] || shim="$here/shim/terrgl32.dll"
 [ -f "$shim" ] || die "terrgl32.dll not found (build it with shim/build.sh)"
+
+# sghooks.dll patches golf.exe in memory at addresses of the 1.03 version only.
+golf=$(find "$game" -maxdepth 1 -iname golf.exe | head -n 1)
+[ -n "$golf" ] || die "golf.exe not found in $game"
+[ "$(sha256sum "$golf" | cut -d' ' -f1)" = "$GOLF103_SHA256" ] ||
+    die "golf.exe isn't the 1.03 version. Install the SimGolf 1.03 patch first (it replaces golf.exe), then run this again. Nothing was changed."
 
 # Check we're looking at the right structure before touching anything.
 pfd=$(hex "$terrain" $PFD_OFFSET 8)

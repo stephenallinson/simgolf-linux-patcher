@@ -197,6 +197,8 @@ static void hook_windows(void)
  * Addresses are jgld.dll's preferred base; it is rebased at runtime. */
 #define JGLD_BASE        0x10000000
 #define JGLD_IMAGE_SIZE  0x13a000
+#define GOLF103_TIMESTAMP  0x594d0000   /* golf.exe from patch 1.03 */
+#define GOLF103_IMAGE_SIZE 0x44d000
 #define SPRITE_VTBL      0x1011d380
 #define SURFACE_VTBL     0x1011d0b0
 #define GOLF_TEXT_START  0x401000
@@ -2039,6 +2041,17 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
     log_msg("sghooks loaded into %s", exe);
     name = strrchr(exe, '\\');
     if (_stricmp(name ? name + 1 : exe, "golf.exe")) return TRUE;
+    /* every address below is golf.exe 1.03's */
+    {
+        IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)GetModuleHandleA(NULL);
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)dos + dos->e_lfanew);
+        if (nt->FileHeader.TimeDateStamp != GOLF103_TIMESTAMP || nt->OptionalHeader.SizeOfImage != GOLF103_IMAGE_SIZE)
+        {
+            log_msg("golf.exe isn't version 1.03 (timestamp %#lx, size %#lx); nothing patched",
+                    nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage);
+            return TRUE;
+        }
+    }
     patch_resolution();
     if (log_file || screen_w != 800 || screen_h != 600) hook_windows();
     draw_log = log_file && GetEnvironmentVariableA("SGHOOKS_DRAWLOG", path, sizeof(path));

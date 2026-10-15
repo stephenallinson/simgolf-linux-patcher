@@ -1,44 +1,130 @@
 # SimGolf on Linux
 
-A fix that makes **Sid Meier's SimGolf** (2002, Firaxis/EA) playable under Wine on Linux. Without it, the course terrain renders as garbage, as black areas, or not at all. The course is built from tiles drawn with OpenGL, and those draws break under Wine.
+Play **Sid Meier's SimGolf** (2002) on Linux. This fix makes the game work properly under Wine, the program that runs Windows games on Linux. It also adds a few extras the original never had:
+- volume controls;
+- optional widescreen;
+- a fix for sounds that kept repeating forever.
 
-This project contains **no game files**. You need your own installed copy of SimGolf, patched to 1.03. The fix changes two bytes in your own `Terrain.dll` and adds two small DLLs of its own: `terrgl32.dll`, and `sghooks.dll`, which fixes a looping-sound bug and enables optional higher resolutions.
+Without the fix, the golf course is drawn as garbage or black areas, or not at all.
 
-Tested on Wine 11.19 (Arch), Mesa 26.2 / RADV, AMD Radeon RX 9070 XT.
+This project contains **no game files**. You need your own copy of SimGolf.
 
-## Install
+The steps below are written for players, not programmers. They take about 15 minutes. Technical details are at the end.
 
-1. Install SimGolf into a Wine prefix from your own disc, then apply the official 1.03 patch. The examples below use `~/.wine-simgolf`.
-2. Download and extract the latest release, then run:
+## What you need
 
+- **Your SimGolf CD**, or a disc image of it (an `.iso` file).
+- **The SimGolf 1.03 patch.** This is a newer `golf.exe` from Firaxis/EA, or a program that installs it. Some editions of the disc include it in a `PATCH` folder.
+- **A Linux computer** with an internet connection, to install Wine and download this fix.
+
+## Using the terminal
+
+Most steps use the **terminal**, a window where you type commands. Open it from your application menu: search for "Terminal" (it may be called Konsole or Console).
+
+- **Run a command:** copy it from this page, paste it into the terminal with **Ctrl+Shift+V** (plain Ctrl+V doesn't work there), then press **Enter**.
+- **Passwords:** commands that start with `sudo` ask for your password. Nothing appears while you type it; that's normal. Type it and press Enter.
+
+## Step 1: Install Wine
+
+Paste the command for your version of Linux. If you're not sure which you have, run `cat /etc/os-release` and look at the `NAME=` line.
+
+**Arch, EndeavourOS, Manjaro:**
+```sh
+sudo pacman -S --needed wine gamescope xorg-xrandr
+```
+
+**Ubuntu, Linux Mint, Pop!_OS, Zorin, Debian:**
+```sh
+sudo dpkg --add-architecture i386
+sudo apt update
+sudo apt install wine wine32:i386 x11-xserver-utils
+sudo apt install gamescope
+```
+If the last command says it can't find `gamescope`, skip it. The game still works, in a window instead of full screen.
+
+**Fedora:**
+```sh
+sudo dnf install wine gamescope xrandr
+```
+
+This fix was tested with Wine 11.19. Your Linux may ship an older Wine. It will probably work, but it hasn't been tested. To check your version, run `wine --version`.
+
+## Step 2: Create a home for SimGolf in Wine
+
+Wine keeps each game's pretend Windows in its own folder, called a *prefix*. These commands create one called `.wine-simgolf` in your home folder, and set it to Windows XP.
+```sh
+WINEPREFIX=$HOME/.wine-simgolf wineboot -i
+WINEPREFIX=$HOME/.wine-simgolf winecfg -v winxp
+```
+
+The first command takes a few seconds. If a window asks to install **Wine Mono** or **Wine Gecko**, you can click **Cancel**: SimGolf doesn't need them.
+
+The folder name starts with a dot, which makes it hidden. To see it in your file manager, press **Ctrl+H**.
+
+## Step 3: Install SimGolf from the disc
+
+1. **Open the disc.**
+   - **CD:** insert it. Your desktop shows it in the file manager.
+   - **Disc image:** right-click the `.iso` file and choose **Open With → Disk Image Mounter**, or **Mount**. The disc then appears in the file manager like a CD.
+2. **Start the installer.** In the terminal, type the start of this command, ending with a space after `wine`. Don't press Enter yet:
    ```sh
-   WINEPREFIX=~/.wine-simgolf ./patch-terrain.sh
+   WINEPREFIX=$HOME/.wine-simgolf wine 
    ```
+   Then drag the disc's **`SETUP.EXE`** from the file manager into the terminal window. That types its location for you. Now press **Enter**.
+3. **Follow the installer, keeping its suggested settings.** Leave the install folder as it is. If it offers to install **DirectX** or to **register** the game, decline both: Wine already provides DirectX.
+4. **Don't start the game yet.** Patch it first (step 4).
 
-   If the game isn't in the standard folder (`C:\Program Files (x86)\EA Games\Firaxis Games\Sid Meiers SimGolf`), pass the folder as an argument:
+## Step 4: Apply the 1.03 patch
 
+The game must be at version 1.03, or this fix refuses to install.
+
+**If your patch is a single `golf.exe` file:** copy it over the one in the game folder.
+
+1. Open the game folder in your file manager. Press **Ctrl+H** if you don't see `.wine-simgolf`:
+   `.wine-simgolf` → `drive_c` → `Program Files (x86)` → `EA Games` → `Firaxis Games` → `Sid Meiers SimGolf`
+2. Rename the `golf.exe` that's there to `golf-1.00.exe`, to keep it as a backup.
+3. Copy the 1.03 `golf.exe` into this folder.
+
+**If your patch is a program** (for example `SimGolf_Patch_v103.exe`): run it the same way as the installer. Type `WINEPREFIX=$HOME/.wine-simgolf wine ` followed by a space, drag the patch file into the terminal, and press Enter.
+
+## Step 5: Install this fix
+
+1. Download `simgolf-linux-0.2.0.tar.gz` from this project's **Releases** page.
+2. Extract it into your home folder: right-click it and choose **Extract Here**, then move the folder to your home folder if it isn't already there. You should end up with a folder called `simgolf-linux-0.2.0` in your home folder.
+3. In the terminal, run:
    ```sh
-   ./patch-terrain.sh "/path/to/prefix/drive_c/.../Sid Meiers SimGolf"
+   cd ~/simgolf-linux-0.2.0
+   ./patch-terrain.sh
    ```
+   It checks that it's looking at the right game files before changing anything, and keeps a backup. When it's done, its last lines start with `Installed`.
 
-   The script checks that it's looking at the right file before changing anything. It saves a backup as `Terrain.dll.orig`, then installs `terrgl32.dll` next to it.
+## Step 6: Play
 
-3. Play:
+```sh
+~/simgolf-linux-0.2.0/run.sh
+```
 
-   ```sh
-   WINEPREFIX=~/.wine-simgolf ./run.sh
-   ```
+The game opens full screen, scaled up as large as it fits on your monitor with crisp pixels. To quit, use the game's own menu: control wheel → **System** (the wrench) → **Exit the Game**.
 
-   This runs the game at its native 800x600 inside [gamescope](https://github.com/ValveSoftware/gamescope), enlarged by the largest whole-number factor that fits your screen, so pixels stay crisp and square (for example 2x on a 1440p monitor). For other scaling, set gamescope options in `GAMESCOPE_ARGS`: `GAMESCOPE_ARGS="-F pixel" ./run.sh` or `"-F fsr"` fill the screen height. Without gamescope, `run.sh` uses a plain Wine virtual desktop; `./run.sh --no-gamescope` forces that.
+**To start SimGolf from your application menu** instead of the terminal, run this once:
+```sh
+cd ~/simgolf-linux-0.2.0
+mkdir -p ~/.local/share/applications
+printf "[Desktop Entry]\nType=Application\nName=SimGolf\nComment=Sid Meier's SimGolf\nExec=\"%s/run.sh\"\nIcon=applications-games\nTerminal=false\nCategories=Game;\n" "$PWD" > ~/.local/share/applications/simgolf.desktop
+```
+SimGolf then appears in your menu under Games. Keep the `simgolf-linux-0.2.0` folder where it is, because the menu entry starts the game from there.
 
-To undo everything: `./patch-terrain.sh --revert`.
+**To undo everything** and put the game files back as they were:
+```sh
+~/simgolf-linux-0.2.0/patch-terrain.sh --revert
+```
 
 ## Settings
 
-`patch-terrain.sh` installs a `settings.ini` in the game folder (an existing one is never overwritten).
+The fix adds a `settings.ini` file to the game folder (`.wine-simgolf` → `drive_c` → `Program Files (x86)` → `EA Games` → `Firaxis Games` → `Sid Meiers SimGolf`). Installing the fix again never overwrites your settings.
 
 - **Volumes:** set them in the game, under the control wheel's **System** menu (the wrench), **Sound Settings...**. Each click on a volume steps it down by 20% (from 0% it goes back to 100%). Changes apply at once and are saved to `settings.ini`.
-- **Everything else:** edit `settings.ini` with any text editor; changes take effect the next time the game starts.
+- **Everything else:** open `settings.ini` with your text editor (right-click → Open With), change the value after the `=`, and save. Changes take effect the next time the game starts. Text after a `;` is a note for you; the game ignores it.
 
 ```ini
 [Display]
@@ -78,22 +164,30 @@ Interface=100
 
 ## Troubleshooting
 
-- **An empty desktop opens, but the game doesn't start.** `golf.exe` has to be started from its own folder. `run.sh` does this for you. If you launch it some other way, `cd` into the game folder first.
+- **`wine: command not found`.** Wine isn't installed yet. See step 1.
+- **`patch-terrain.sh` says golf.exe isn't the 1.03 version.** Apply the 1.03 patch (step 4), then run `./patch-terrain.sh` again. Nothing was changed.
+- **`Permission denied` when running `./patch-terrain.sh` or `run.sh`.** Your unpacking program dropped the files' "can run" flag. Run `chmod +x ~/simgolf-linux-0.2.0/*.sh` and try again.
+- **`game folder not found`.** The game isn't installed where the scripts look. If you installed it somewhere else, pass the game folder to `patch-terrain.sh`: type `./patch-terrain.sh ` followed by a space, drag the game folder into the terminal, and press Enter. For `run.sh`, start it as `SIMGOLF_DIR="/path/to/the/game folder" ~/simgolf-linux-0.2.0/run.sh`.
+- **An empty desktop opens, but the game doesn't start.** `golf.exe` has to be started from its own folder. `run.sh` does this for you, so start the game with `run.sh`.
 - **The game won't start after a crash or a run you interrupted.** An old copy of the game may still be running. Clear it with:
   `WINEPREFIX=~/.wine-simgolf wineserver -k`
   If processes still remain, run `pkill -9 -f 'winedevice|gamescope'`.
 - **"Can't Find A Suitable PixelFormat" message boxes.** `Terrain.dll` isn't patched. Run `patch-terrain.sh` again.
-- **Something still renders wrong.** Run with logging on, then open an issue and attach the log:
+- **Something still renders wrong.** Run with logging on, then open an issue on this project's page and attach the log:
   `TERRGL32_LOG='Z:\tmp\terrgl32.log' ./run.sh` (the log is written to `/tmp/terrgl32.log`).
 
 - **The game shows small, with black bars, instead of scaled up.** `run.sh` tells gamescope your monitor's size, which it detects with `xrandr`. If it picks the wrong monitor, set the size yourself: `SIMGOLF_OUTPUT=2560x1440 ./run.sh`.
 
 ## Known issues
 
-- **Running Windows versions of SimGolf other than 1.03** isn't supported; `patch-terrain.sh` refuses an unknown `Terrain.dll`.
+- **Only the English 1.03 version of SimGolf is supported.** `patch-terrain.sh` checks `golf.exe` and refuses other versions, because the fix changes the game at addresses specific to 1.03.
 - **Wide resolutions** are new in 0.2.0. If a screen or panel shows up in the wrong place, please open an issue with a screenshot.
 
 - **Looping sound** (fixed in 0.2.0). The end of a sound, such as a laugh, a "Woohoo!" or the faint ambient "radar" beeping, could keep looping, even after you returned to the main menu. Wine's `mmioAdvance` drops bytes that the caller hasn't read yet, while Windows keeps them. The game's `sound.dll` relies on the Windows behaviour when streaming longer sounds: with bytes missing, a stream never reaches its end and replays its last buffer forever. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
+
+## For the technically curious
+
+Everything below explains how the fix works and how to build it. You don't need it to play.
 
 ## How it works
 
