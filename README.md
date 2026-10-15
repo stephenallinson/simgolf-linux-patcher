@@ -83,6 +83,8 @@ Interface=100
 - **Something still renders wrong.** Run with logging on, then open an issue and attach the log:
   `TERRGL32_LOG='Z:\tmp\terrgl32.log' ./run.sh` (the log is written to `/tmp/terrgl32.log`).
 
+- **The game shows small, with black bars, instead of scaled up.** `run.sh` tells gamescope your monitor's size, which it detects with `xrandr`. If it picks the wrong monitor, set the size yourself: `SIMGOLF_OUTPUT=2560x1440 ./run.sh`.
+
 ## Known issues
 
 - **Looping sound** (fixed, in testing). The end of a sound, such as a laugh, a "Woohoo!" or the faint ambient "radar" beeping, could keep looping, even after you returned to the main menu. Wine's `mmioAdvance` drops bytes that the caller hasn't read yet, while Windows keeps them. The game's `sound.dll` relies on the Windows behaviour when streaming longer sounds: with bytes missing, a stream never reaches its end and replays its last buffer forever. `sghooks.dll` fixes it at any resolution, in memory and without changing `sound.dll`. `SGHOOKS_NO_SOUNDFIX=1` turns the fix off.
