@@ -44,6 +44,7 @@ To undo everything: `./patch-terrain.sh --revert`.
 [Display]
 Resolution=1280x720   ; at least 800x600
 Art=native            ; native (original pixel art, 1:1) or large
+LockMouse=0           ; 1: keep the mouse inside the game window
 
 [Sound]
 Master=100            ; volumes in percent, 0 to 100
@@ -71,6 +72,7 @@ Interface=100
   - **Ambience:** course background loops.
   - **Interface:** clicks and menu sounds.
   - **Effects:** everything else.
+- **LockMouse:** `1` keeps the mouse inside the game window (gamescope's `--force-grab-cursor`), so panning at a screen edge can't slide the pointer onto another monitor. Switch away with your desktop's keyboard shortcuts.
 - **Overrides:** the environment variables `SIMGOLF_RES` and `SIMGOLF_ART` override `[Display]`, for example `SIMGOLF_RES=1024x768 ./run.sh`.
 
 ## Troubleshooting
