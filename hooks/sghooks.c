@@ -935,6 +935,28 @@ static void hook_hud_input(void)
         memcpy(new_ins + 4, &nv, 4);
         patch_bytes("golfer aim boundary", 0x41b21c, old_ins, new_ins, 8);
     }
+    {
+        /* other checks of the mouse / click y against 480, the top of the
+         * palette at 800x600:
+         *   0x41f2b2  cmp ecx, 0x1e0  click to take your golfer's shot
+         *   0x419c1b  mov edi, 0x1e0  mouse y limit (also used at 0x419d34)
+         *   0x41a98b  mov edi, 0x1e0  mouse y limit when building */
+        static const DWORD mov_sites[] = {0x419c1b, 0x41a98b};
+        BYTE old_ins[6], new_ins[6];
+        DWORD v = 0x1e0, nv = 0x1e0 + dy;
+        int i;
+
+        old_ins[0] = 0x81; old_ins[1] = 0xf9;
+        memcpy(new_ins, old_ins, 2);
+        memcpy(old_ins + 2, &v, 4);
+        memcpy(new_ins + 2, &nv, 4);
+        patch_bytes("golfer shot click boundary", 0x41f2b2, old_ins, new_ins, 6);
+        old_ins[0] = new_ins[0] = 0xbf;
+        memcpy(old_ins + 1, &v, 4);
+        memcpy(new_ins + 1, &nv, 4);
+        for (i = 0; i < 2; i++)
+            patch_bytes("course mouse y limit", mov_sites[i], old_ins, new_ins, 5);
+    }
     patch_file_lists();
 }
 
