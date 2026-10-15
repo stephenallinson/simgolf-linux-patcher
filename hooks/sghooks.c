@@ -900,6 +900,48 @@ static void hook_menus(void)
                              sizeof(menu_prologue), menu_hook);
 }
 
+/* Replace a "y >= limit: not on the course" check (len bytes at site, a
+ * compare and a jge to skip) with a jump to a stub that first tests the
+ * mouse x: right of the palette (x >= 800) the course continues. The mouse
+ * x is [esp+0x6c] in the main routine, or the click position global. */
+enum ytest { Y_ESP5C_EDI, Y_ESP5C_IMM, Y_ECX_EDI, Y_ECX_IMM };
+
+static void palette_gap_stub(const char *what, DWORD site, const BYTE *orig, int len, BOOL click_x,
+                             enum ytest yt, DWORD limit, DWORD cont, DWORD skip)
+{
+    static BYTE *pool;
+    static int used;
+    BYTE *st, jmp[16];
+    int n = 0, ylen, i;
+    DWORD v, rel;
+
+    if (!pool && !(pool = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE))) return;
+    if (used + 64 > 4096 || len < 5 || len > 16) return;
+    st = pool + used;
+    if (click_x) { st[n++] = 0x81; st[n++] = 0x3d; v = 0x822d60; memcpy(st + n, &v, 4); n += 4; }
+    else { st[n++] = 0x81; st[n++] = 0x7c; st[n++] = 0x24; st[n++] = 0x6c; }
+    v = 800; memcpy(st + n, &v, 4); n += 4;          /* cmp x, 800 */
+    ylen = yt == Y_ESP5C_EDI ? 4 : yt == Y_ESP5C_IMM ? 8 : yt == Y_ECX_EDI ? 2 : 6;
+    st[n++] = 0x7d; st[n++] = (BYTE)(ylen + 2);      /* jge ok */
+    switch (yt)
+    {
+    case Y_ESP5C_EDI: st[n++] = 0x39; st[n++] = 0x7c; st[n++] = 0x24; st[n++] = 0x5c; break;
+    case Y_ESP5C_IMM: st[n++] = 0x81; st[n++] = 0x7c; st[n++] = 0x24; st[n++] = 0x5c; memcpy(st + n, &limit, 4); n += 4; break;
+    case Y_ECX_EDI: st[n++] = 0x3b; st[n++] = 0xcf; break;
+    case Y_ECX_IMM: st[n++] = 0x81; st[n++] = 0xf9; memcpy(st + n, &limit, 4); n += 4; break;
+    }
+    st[n++] = 0x7d; st[n++] = 5;                     /* jge skip */
+    st[n++] = 0xe9; rel = cont - (DWORD)(st + n + 4); memcpy(st + n, &rel, 4); n += 4;   /* ok: */
+    st[n++] = 0xe9; rel = skip - (DWORD)(st + n + 4); memcpy(st + n, &rel, 4); n += 4;   /* skip: */
+    used += (n + 15) & ~15;
+
+    jmp[0] = 0xe9;
+    rel = (DWORD)st - (site + 5);
+    memcpy(jmp + 1, &rel, 4);
+    for (i = 5; i < len; i++) jmp[i] = 0x90;
+    patch_bytes(what, site, orig, jmp, len);
+}
+
 static void hook_hud_input(void)
 {
     static const BYTE wheel_prologue[] = {0x51, 0x53, 0x55, 0x8b, 0x6c, 0x24, 0x14};  /* push ecx/ebx/ebp; mov ebp,[esp+0x14] */
@@ -927,35 +969,32 @@ static void hook_hud_input(void)
     move_boundary("bottom HUD click boundary (wheel)", 0x41e406, cmp_ecx, 0x1b8, dy);
     patch_palette_boundary(dy);
     {
-        /* playing as your golfer, the aim follows the mouse only above the
-         * palette: cmp dword [esp+0x5c], 0x1e0 (mouse y < 480) at 0x41b21c */
-        BYTE old_ins[8] = {0x81, 0x7c, 0x24, 0x5c}, new_ins[8] = {0x81, 0x7c, 0x24, 0x5c};
-        DWORD v = 0x1e0, nv = 0x1e0 + dy;
-        memcpy(old_ins + 4, &v, 4);
-        memcpy(new_ins + 4, &nv, 4);
-        patch_bytes("golfer aim boundary", 0x41b21c, old_ins, new_ins, 8);
-    }
-    {
-        /* other checks of the mouse / click y against 480, the top of the
-         * palette at 800x600:
-         *   0x41f2b2  cmp ecx, 0x1e0  click to take your golfer's shot
-         *   0x419c1b  mov edi, 0x1e0  mouse y limit (also used at 0x419d34)
-         *   0x41a98b  mov edi, 0x1e0  mouse y limit when building */
-        static const DWORD mov_sites[] = {0x419c1b, 0x41a98b};
-        BYTE old_ins[6], new_ins[6];
-        DWORD v = 0x1e0, nv = 0x1e0 + dy;
-        int i;
+        /* Checks of the mouse / click y against 480, the top of the palette
+         * at 800x600: below it is the palette, so the game ignores the
+         * course there. The line moves down with the palette (dy), and on a
+         * wide screen the palette ends at x 800, so right of it is course.
+         *   0x41b21c  aim of your golfer's shot follows the mouse
+         *   0x41f2b2  click to take the shot (click position globals)
+         *   0x41a990  building preview (y limit in edi, from 0x41a98b or
+         *   0x419d34  0x419c1b; 0x419d34 is the same check reached from
+         *   0x419c20  another branch, and 0x419c20 a third) */
+        static const BYTE mov_old[] = {0xbf, 0xe0, 0x01, 0x00, 0x00};   /* mov edi, 0x1e0 */
+        static const BYTE aim_old[] = {0x81, 0x7c, 0x24, 0x5c, 0xe0, 0x01, 0x00, 0x00, 0x0f, 0x8d, 0x9b, 0x0e, 0x00, 0x00};
+        static const BYTE shot_old[] = {0x81, 0xf9, 0xe0, 0x01, 0x00, 0x00, 0x7d, 0x3b};
+        static const BYTE build_old[] = {0x39, 0x7c, 0x24, 0x5c, 0x0f, 0x8d, 0x2b, 0x17, 0x00, 0x00};
+        static const BYTE build2_old[] = {0x39, 0x7c, 0x24, 0x5c, 0x0f, 0x8d, 0x40, 0x0c, 0x00, 0x00};
+        static const BYTE hover_old[] = {0x3b, 0xcf, 0x0f, 0x8d, 0xde, 0x00, 0x00, 0x00};
+        DWORD limit = 0x1e0 + dy;
+        BYTE mov_new[5] = {0xbf};
 
-        old_ins[0] = 0x81; old_ins[1] = 0xf9;
-        memcpy(new_ins, old_ins, 2);
-        memcpy(old_ins + 2, &v, 4);
-        memcpy(new_ins + 2, &nv, 4);
-        patch_bytes("golfer shot click boundary", 0x41f2b2, old_ins, new_ins, 6);
-        old_ins[0] = new_ins[0] = 0xbf;
-        memcpy(old_ins + 1, &v, 4);
-        memcpy(new_ins + 1, &nv, 4);
-        for (i = 0; i < 2; i++)
-            patch_bytes("course mouse y limit", mov_sites[i], old_ins, new_ins, 5);
+        memcpy(mov_new + 1, &limit, 4);
+        patch_bytes("course mouse y limit", 0x419c1b, mov_old, mov_new, 5);
+        patch_bytes("course mouse y limit", 0x41a98b, mov_old, mov_new, 5);
+        palette_gap_stub("golfer aim boundary", 0x41b21c, aim_old, sizeof(aim_old), FALSE, Y_ESP5C_IMM, limit, 0x41b22a, 0x41c0c5);
+        palette_gap_stub("golfer shot click boundary", 0x41f2b2, shot_old, sizeof(shot_old), TRUE, Y_ECX_IMM, limit, 0x41f2ba, 0x41f2f5);
+        palette_gap_stub("building preview boundary", 0x41a990, build_old, sizeof(build_old), FALSE, Y_ESP5C_EDI, 0, 0x41a99a, 0x41c0c5);
+        palette_gap_stub("building preview boundary (2)", 0x419d34, build2_old, sizeof(build2_old), FALSE, Y_ESP5C_EDI, 0, 0x419d3e, 0x41a97e);
+        palette_gap_stub("course hover boundary", 0x419c20, hover_old, sizeof(hover_old), FALSE, Y_ECX_EDI, 0, 0x419c28, 0x419d06);
     }
     patch_file_lists();
 }
