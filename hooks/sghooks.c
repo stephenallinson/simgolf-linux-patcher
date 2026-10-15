@@ -334,6 +334,10 @@ static int golf_callers(DWORD *out, int max)
         if (!(c[-5] == 0xe8 || (c[-6] == 0xff && (c[-5] & 0x38) == 0x10) ||
               (c[-2] == 0xff && (c[-1] & 0x38) == 0x10) || (c[-3] == 0xff && (c[-2] & 0x38) == 0x10)))
             continue;
+        /* the main routine is the outermost frame that matters; a copy of
+         * one of its return addresses before any inner caller is a stale
+         * slot (e.g. in this DLL's own frames), not the end of the chain */
+        if (a >= MAIN_START && a < MAIN_END && n == 0) continue;
         /* stale copies of a return address can sit in many stack slots; keep one */
         for (i = 0; i < n && out[i] != a; i++);
         if (i == n) out[n++] = a;
@@ -1671,8 +1675,13 @@ struct snd_file
     HMMIO h;
     LONG data_off, data_len;   /* the data chunk, in file bytes */
     int cat;
+    /* a sound held whole in its mmio buffer (short sounds; the game keeps
+     * some, e.g. the story music, loaded for the whole session): the
+     * buffer's samples, an unscaled copy, and the gain they carry now */
+    short *buf, *orig;
+    int count, gain;
 };
-#define SND_FILES 256
+#define SND_FILES 1024
 static struct snd_file snd_files[SND_FILES];
 static CRITICAL_SECTION snd_files_lock;
 
@@ -1700,7 +1709,8 @@ static void load_volumes(void)
 static int sound_category(const char *name)
 {
     static const char *const music[] = {"golf harp", "manifold music", "music idea", "new age", "newhart",
-                                        "romeo and juliet", "sail boat", "steel drum", "credit"};
+                                        "romeo and juliet", "sail boat", "steel drum", "credit",
+                                        "buy1short", "buy2short", "buy3short", "buy4short"};   /* story music */
     static const char *const ambience[] = {"golfambience", "desert", "lake", "spring", "winter", "grass"};
     char low[MAX_PATH], *base;
     int i;
@@ -1767,7 +1777,7 @@ static void apply_volume(HMMIO h, MMIOINFO *info)
     data_off = sf->data_off;
     data_end = sf->data_off + sf->data_len;
     LeaveCriticalSection(&snd_files_lock);
-    if (gain == 10000 || !info->pchBuffer || info->pchEndRead <= info->pchBuffer) return;
+    if (!info->pchBuffer || info->pchEndRead <= info->pchBuffer) return;
 
     start = info->lBufOffset;
     end = start + (LONG)(info->pchEndRead - info->pchBuffer);
@@ -1777,7 +1787,48 @@ static void apply_volume(HMMIO h, MMIOINFO *info)
     if (to <= from) return;
     p = (short *)(info->pchBuffer + (from - start));
     e = p + (to - from) / 2;
+    if (from == data_off && to == data_end)
+    {
+        /* the whole sound: keep an unscaled copy, so a later volume change
+         * can rescale it in place */
+        EnterCriticalSection(&snd_files_lock);
+        if (sf->h == h)
+        {
+            short *copy = realloc(sf->orig, (to - from));
+            if (copy)
+            {
+                memcpy(copy, p, to - from);
+                sf->orig = copy;
+                sf->buf = p;
+                sf->count = (to - from) / 2;
+                sf->gain = gain;
+            }
+        }
+        LeaveCriticalSection(&snd_files_lock);
+    }
+    if (gain == 10000) return;
     for (; p < e; p++) *p = (short)(*p * gain / 10000);
+}
+
+/* After a volume change: rescale the sounds held whole in memory. */
+static void rescale_loaded_sounds(void)
+{
+    int i, k, gain, n = 0, held = 0;
+
+    EnterCriticalSection(&snd_files_lock);
+    for (i = 0; i < SND_FILES; i++)
+    {
+        struct snd_file *sf = &snd_files[i];
+        if (!sf->h || !sf->orig) continue;
+        held++;
+        gain = vol_master * vol_cat[sf->cat];
+        if (gain == sf->gain) continue;
+        for (k = 0; k < sf->count; k++) sf->buf[k] = (short)(sf->orig[k] * gain / 10000);
+        sf->gain = gain;
+        n++;
+    }
+    LeaveCriticalSection(&snd_files_lock);
+    log_msg("volume: rescaled %d of %d sounds held in memory", n, held);
 }
 
 static MMRESULT WINAPI snd_mmioAdvance(HMMIO h, MMIOINFO *info, UINT flags)
@@ -1808,6 +1859,9 @@ static HMMIO WINAPI snd_mmioOpenA(LPSTR name, MMIOINFO *info, DWORD flags)
             snd_files[i].data_off = off;
             snd_files[i].data_len = len;
             snd_files[i].cat = sound_category(name);
+            snd_files[i].buf = NULL;
+            free(snd_files[i].orig);
+            snd_files[i].orig = NULL;
             break;
         }
     LeaveCriticalSection(&snd_files_lock);
@@ -1821,7 +1875,14 @@ static MMRESULT WINAPI snd_mmioClose(HMMIO h, UINT flags)
     int i;
 
     EnterCriticalSection(&snd_files_lock);
-    for (i = 0; i < SND_FILES; i++) if (snd_files[i].h == h) snd_files[i].h = NULL;
+    for (i = 0; i < SND_FILES; i++)
+        if (snd_files[i].h == h)
+        {
+            snd_files[i].h = NULL;
+            snd_files[i].buf = NULL;
+            free(snd_files[i].orig);
+            snd_files[i].orig = NULL;
+        }
     LeaveCriticalSection(&snd_files_lock);
     return real_mmioClose(h, flags);
 }
@@ -1848,6 +1909,7 @@ static void sound_settings_menu(int x, int y, unsigned int flags, int a4, unsign
         sprintf(num, "%d", *v);
         WritePrivateProfileStringA("Sound", ret == 0 ? "Master" : vol_names[ret - 1], num, ini_path);
         log_msg("sound settings: %s %d", ret == 0 ? "Master" : vol_names[ret - 1], *v);
+        rescale_loaded_sounds();
     }
     MENU_TEXT[0] = 0;
 }
