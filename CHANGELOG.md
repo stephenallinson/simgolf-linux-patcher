@@ -23,6 +23,7 @@ The first public release. It needs your own copy of SimGolf, patched to 1.03.
 
 ### Settings
 - A `settings.ini` in the game folder, for `Resolution`, `Art`, `LockMouse` and the volumes. `patch-terrain.sh` installs it and never overwrites an existing one.
+- `AutoSaves` keeps up to 9 rotating autosaves instead of the game's 2 (default 6), always overwriting the oldest.
 - `LockMouse=1` keeps the mouse inside the game window, so panning at a screen edge can't slide the pointer onto another monitor.
 
 ### Installing

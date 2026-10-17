@@ -44,6 +44,7 @@ static void log_msg(const char *fmt, ...)
 /* ---- settings.ini (in the game folder, next to this DLL) ----
  * [Display] Resolution=WxH, Art=native|large
  * [Sound] Master, Music, Voices, Effects, Ambience, Interface = 0..100 (%)
+ * [Game] AutoSaves = 2..9, the number of rotating autosave slots
  * The environment variables SIMGOLF_RES and SIMGOLF_ART override [Display]. */
 static char ini_path[MAX_PATH];
 
@@ -1128,6 +1129,50 @@ static void redirect_call(const char *what, DWORD site, DWORD from, void *to)
     patch_bytes(what, site, old_ins, new_ins, sizeof(old_ins));
 }
 
+/* ---- Autosave slots ----
+ * The game autosaves every 512 ticks of its clock (0x834170), alternating
+ * between &AutoSave1 (0x417c61) and &AutoSave2 (0x417c87), both through the
+ * save function 0x40b4a0(name). With [Game] AutoSaves=N both calls go here
+ * instead and write the oldest of &AutoSave1..N, so N saves back are kept. */
+#define SAVE_GAME_FN 0x40b4a0
+static int autosave_slots = 2;
+
+static void __cdecl autosave(const char *name)
+{
+    void (__cdecl *save_game)(const char *) = (void *)SAVE_GAME_FN;
+    char slot[32], path[MAX_PATH];
+    ULONGLONG oldest = ~0ULL;
+    int i, pick = 1;
+
+    for (i = 1; i <= autosave_slots; i++)
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        ULONGLONG t;
+
+        sprintf(path, "Saved Games\\&AutoSave%d.sve", i);
+        t = GetFileAttributesExA(path, GetFileExInfoStandard, &fa)
+                ? ((ULONGLONG)fa.ftLastWriteTime.dwHighDateTime << 32) | fa.ftLastWriteTime.dwLowDateTime : 0;
+        if (t < oldest) { oldest = t; pick = i; }
+    }
+    sprintf(slot, "&AutoSave%d", pick);
+    log_msg("autosave: %s (game asked for %s)", slot, name);
+    save_game(slot);
+}
+
+static void hook_autosaves(void)
+{
+    char buf[16];
+
+    if (!setting(NULL, "Game", "AutoSaves", buf, sizeof(buf))) return;
+    autosave_slots = atoi(buf);
+    if (autosave_slots < 2) autosave_slots = 2;
+    if (autosave_slots > 9) autosave_slots = 9;
+    if (autosave_slots == 2) return;
+    redirect_call("autosave 1", 0x417c61, SAVE_GAME_FN, autosave);
+    redirect_call("autosave 2", 0x417c87, SAVE_GAME_FN, autosave);
+    log_msg("autosave: %d slots", autosave_slots);
+}
+
 /* Replace the 32-bit immediate at the end of an instruction (opcode bytes
  * checked as they are, then the old value). */
 static void patch_imm32(const char *what, DWORD addr, int oplen, DWORD from, DWORD to)
@@ -2064,6 +2109,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, void *reserved)
     }
     if (screen_w != 800 || screen_h != 600) hook_hud_input();
     hook_menus();
+    hook_autosaves();
     if (log_file && GetEnvironmentVariableA("SGHOOKS_SNDLOG", path, sizeof(path)))
     {
         InitializeCriticalSection(&snd_lock);

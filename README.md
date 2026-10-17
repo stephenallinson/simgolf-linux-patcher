@@ -139,6 +139,9 @@ Voices=100
 Effects=100
 Ambience=100
 Interface=100
+
+[Game]
+AutoSaves=6           ; autosaves to keep, 2 to 9
 ```
 
 - **Resolution:** the game has no volume or screen settings of its own; `sghooks.dll` adds them by changing the game in memory at start-up, without touching its files.
@@ -160,6 +163,7 @@ Interface=100
   - **Interface:** clicks and menu sounds.
   - **Effects:** everything else.
 - **LockMouse:** `1` keeps the mouse inside the game window (gamescope's `--force-grab-cursor`), so panning at a screen edge can't slide the pointer onto another monitor. Switch away with your desktop's keyboard shortcuts.
+- **AutoSaves:** the game autosaves every couple of minutes. The original keeps only two autosaves, so you can go back about three minutes. With `AutoSaves=6` it keeps six (`&AutoSave1` to `&AutoSave6` in the load list), always overwriting the oldest.
 - **Overrides:** the environment variables `SIMGOLF_RES` and `SIMGOLF_ART` override `[Display]`, for example `SIMGOLF_RES=1024x768 ./run.sh`.
 
 ## Troubleshooting
