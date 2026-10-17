@@ -51,13 +51,12 @@ This fix was tested with Wine 11.19. Your Linux may ship an older Wine. It will 
 
 ## Step 2: Create a home for SimGolf in Wine
 
-Wine keeps each game's pretend Windows in its own folder, called a *prefix*. These commands create one called `.wine-simgolf` in your home folder, and set it to Windows XP.
+Wine keeps each game's pretend Windows in its own folder, called a *prefix*. This command creates one called `.wine-simgolf` in your home folder:
 ```sh
 WINEPREFIX=$HOME/.wine-simgolf wineboot -i
-WINEPREFIX=$HOME/.wine-simgolf winecfg -v winxp
 ```
 
-The first command takes a few seconds. If a window asks to install **Wine Mono** or **Wine Gecko**, you can click **Cancel**: SimGolf doesn't need them.
+It takes a few seconds. If a window asks to install **Wine Mono** or **Wine Gecko**, you can click **Cancel**: SimGolf doesn't need them.
 
 The folder name starts with a dot, which makes it hidden. To see it in your file manager, press **Ctrl+H**.
 
@@ -70,9 +69,13 @@ The folder name starts with a dot, which makes it hidden. To see it in your file
    ```sh
    WINEPREFIX=$HOME/.wine-simgolf wine 
    ```
-   Then drag the disc's **`SETUP.EXE`** from the file manager into the terminal window. That types its location for you. Now press **Enter**.
+   Then drag the disc's **`Setup.exe`** (or `SETUP.EXE`) from the file manager into the terminal window. That types its location for you. Now press **Enter**.
 3. **Follow the installer, keeping its suggested settings.** Leave the install folder as it is. If it offers to install **DirectX** or to **register** the game, decline both: Wine already provides DirectX.
-4. **Don't start the game yet.** Patch it first (step 4).
+4. **Set the prefix to Windows XP,** the system SimGolf was made for:
+   ```sh
+   WINEPREFIX=$HOME/.wine-simgolf winecfg -v winxp
+   ```
+5. **Don't start the game yet.** Patch it first (step 4).
 
 ## Step 4: Apply the 1.03 patch
 
@@ -89,11 +92,11 @@ The game must be at version 1.03, or this fix refuses to install.
 
 ## Step 5: Install this fix
 
-1. Download `simgolf-linux-0.2.0.tar.gz` from this project's **Releases** page.
-2. Extract it into your home folder: right-click it and choose **Extract Here**, then move the folder to your home folder if it isn't already there. You should end up with a folder called `simgolf-linux-0.2.0` in your home folder.
+1. Download `simgolf-linux-0.2.1.tar.gz` from this project's **Releases** page.
+2. Extract it into your home folder: right-click it and choose **Extract Here**, then move the folder to your home folder if it isn't already there. You should end up with a folder called `simgolf-linux-0.2.1` in your home folder.
 3. In the terminal, run:
    ```sh
-   cd ~/simgolf-linux-0.2.0
+   cd ~/simgolf-linux-0.2.1
    ./patch-terrain.sh
    ```
    It checks that it's looking at the right game files before changing anything, and keeps a backup. When it's done, its last lines start with `Installed`.
@@ -101,22 +104,22 @@ The game must be at version 1.03, or this fix refuses to install.
 ## Step 6: Play
 
 ```sh
-~/simgolf-linux-0.2.0/run.sh
+~/simgolf-linux-0.2.1/run.sh
 ```
 
 The game opens full screen, scaled up as large as it fits on your monitor with crisp pixels. To quit, use the game's own menu: control wheel → **System** (the wrench) → **Exit the Game**.
 
 **To start SimGolf from your application menu** instead of the terminal, run this once:
 ```sh
-cd ~/simgolf-linux-0.2.0
+cd ~/simgolf-linux-0.2.1
 mkdir -p ~/.local/share/applications
 printf "[Desktop Entry]\nType=Application\nName=SimGolf\nComment=Sid Meier's SimGolf\nExec=\"%s/run.sh\"\nIcon=applications-games\nTerminal=false\nCategories=Game;\n" "$PWD" > ~/.local/share/applications/simgolf.desktop
 ```
-SimGolf then appears in your menu under Games. Keep the `simgolf-linux-0.2.0` folder where it is, because the menu entry starts the game from there.
+SimGolf then appears in your menu under Games. Keep the `simgolf-linux-0.2.1` folder where it is, because the menu entry starts the game from there.
 
 **To undo everything** and put the game files back as they were:
 ```sh
-~/simgolf-linux-0.2.0/patch-terrain.sh --revert
+~/simgolf-linux-0.2.1/patch-terrain.sh --revert
 ```
 
 ## Settings
@@ -170,8 +173,8 @@ AutoSaves=6           ; autosaves to keep, 2 to 9
 
 - **`wine: command not found`.** Wine isn't installed yet. See step 1.
 - **`patch-terrain.sh` says golf.exe isn't the 1.03 version.** Apply the 1.03 patch (step 4), then run `./patch-terrain.sh` again. Nothing was changed.
-- **`Permission denied` when running `./patch-terrain.sh` or `run.sh`.** Your unpacking program dropped the files' "can run" flag. Run `chmod +x ~/simgolf-linux-0.2.0/*.sh` and try again.
-- **`game folder not found`.** The game isn't installed where the scripts look. If you installed it somewhere else, pass the game folder to `patch-terrain.sh`: type `./patch-terrain.sh ` followed by a space, drag the game folder into the terminal, and press Enter. For `run.sh`, start it as `SIMGOLF_DIR="/path/to/the/game folder" ~/simgolf-linux-0.2.0/run.sh`.
+- **`Permission denied` when running `./patch-terrain.sh` or `run.sh`.** Your unpacking program dropped the files' "can run" flag. Run `chmod +x ~/simgolf-linux-0.2.1/*.sh` and try again.
+- **`game folder not found`.** The game isn't installed where the scripts look. If you installed it somewhere else, pass the game folder to `patch-terrain.sh`: type `./patch-terrain.sh ` followed by a space, drag the game folder into the terminal, and press Enter. For `run.sh`, start it as `SIMGOLF_DIR="/path/to/the/game folder" ~/simgolf-linux-0.2.1/run.sh`.
 - **An empty desktop opens, but the game doesn't start.** `golf.exe` has to be started from its own folder. `run.sh` does this for you, so start the game with `run.sh`.
 - **The game won't start after a crash or a run you interrupted.** An old copy of the game may still be running. Clear it with:
   `WINEPREFIX=~/.wine-simgolf wineserver -k`

@@ -51,7 +51,7 @@ typedef void (WINAPI *PFN_ATTACH)(GLenum, GLenum, GLenum, GLuint);
 typedef GLenum (WINAPI *PFN_STATUS)(GLenum);
 typedef void (WINAPI *PFN_WINDOWPOS)(GLint, GLint);
 
-#define TERRGL32_VERSION "0.2.0"
+#define TERRGL32_VERSION "0.2.1"
 
 static PFN_GENS p_glGenFramebuffers, p_glGenRenderbuffers;
 static PFN_GENS p_glDeleteFramebuffers, p_glDeleteRenderbuffers;

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 (2026-10-17), beta
+
+### Settings
+- `AutoSaves` in `settings.ini` keeps up to 9 rotating autosaves instead of the game's 2 (6 for new installs), always overwriting the oldest. The game autosaves about every 100 seconds, so 6 slots go back about 10 minutes.
+
+### Installing
+- The README now walks through the whole install for players new to Linux and Wine: installing Wine, creating the prefix, installing from the disc, the 1.03 patch, this fix, and a menu entry for the game.
+- `patch-terrain.sh` refuses a `golf.exe` other than 1.03 before changing anything, and `sghooks.dll` leaves any other version alone. Without the patch, the game would have crashed with no explanation.
+
 ## 0.2.0 (2026-10-15), beta
 
 The first public release. It needs your own copy of SimGolf, patched to 1.03.
@@ -23,12 +32,7 @@ The first public release. It needs your own copy of SimGolf, patched to 1.03.
 
 ### Settings
 - A `settings.ini` in the game folder, for `Resolution`, `Art`, `LockMouse` and the volumes. `patch-terrain.sh` installs it and never overwrites an existing one.
-- `AutoSaves` keeps up to 9 rotating autosaves instead of the game's 2 (default 6), always overwriting the oldest.
 - `LockMouse=1` keeps the mouse inside the game window, so panning at a screen edge can't slide the pointer onto another monitor.
-
-### Installing
-- Step-by-step install instructions in the README for players new to Linux and Wine, from installing Wine to a menu entry for the game.
-- `patch-terrain.sh` refuses a `golf.exe` other than 1.03, before changing anything; `sghooks.dll` leaves any other version alone too.
 
 ### Known issues
 - The golfer close-up inset at wide resolutions hasn't been checked on screen yet.
